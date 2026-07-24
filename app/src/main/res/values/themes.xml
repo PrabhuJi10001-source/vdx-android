@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.VDX" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#6c3aed</item>
+        <item name="colorPrimaryVariant">#5b2fd9</item>
+        <item name="colorOnPrimary">#ffffff</item>
+        <item name="colorSecondary">#22c55e</item>
+        <item name="colorOnSecondary">#ffffff</item>
+        <item name="android:statusBarColor">#ffffff</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vdx_purple">#6c3aed</color>
+    <color name="vdx_bg">#f5f5f7</color>
+    <color name="vdx_text">#1a1a2e</color>
+    <color name="vdx_text_light">#3a3a3c</color>
+    <color name="vdx_white">#ffffff</color>
+    <color name="vdx_green">#22c55e</color>
+    <color name="vdx_amber">#f59e0b</color>
+</resources>

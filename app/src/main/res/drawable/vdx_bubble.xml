@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- Purple circle background -->
+    <path
+        android:fillColor="#6c3aed"
+        android:pathData="M24,4 C12.954,4 4,12.954 4,24 C4,35.046 12.954,44 24,44 C35.046,44 44,35.046 44,24 C44,12.954 35.046,4 24,4Z" />
+    <!-- White V letterform -->
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M24,16 L18,34 L22,34 L24,26 L26,34 L30,34 L24,16Z" />
+    <!-- Voice wave left -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#ffffff"
+        android:strokeWidth="2"
+        android:pathData="M12,22 C12,22 10,24 10,26 C10,28 12,30 12,30" />
+    <!-- Voice wave right -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#ffffff"
+        android:strokeWidth="2"
+        android:pathData="M36,22 C36,22 38,24 38,26 C38,28 36,30 36,30" />
+</vector>
