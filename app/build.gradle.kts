@@ -61,4 +61,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+
+    // Sentry — crash reporting and performance monitoring
+    implementation("io.sentry:sentry-android:7.19.0")
 }

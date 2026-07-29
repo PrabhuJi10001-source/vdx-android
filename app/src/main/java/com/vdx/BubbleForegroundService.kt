@@ -40,6 +40,8 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.net.Uri
+import com.vdx.sonic.*
+import com.vdx.sonic.robot.RobotHand as SonicRobotHand
 import com.vdx.memory.UserMemoryStore
 import kotlinx.coroutines.*
 import java.util.Locale
@@ -114,6 +116,67 @@ class BubbleForegroundService : Service() {
 
     private val llmBridge by lazy { LlmBridge(this) }
     private val robotHand by lazy { RobotHand(this, tts) }
+
+    // VDX Sonic engine
+    private val sonicEngine: SonicEngine by lazy {
+        SonicEngine(this).apply {
+            onStateChange = { state ->
+                handler.post {
+                    // Map Sonic states to bubble states
+                    currentState = when (state) {
+                        com.vdx.sonic.BubbleState.IDLE -> BubbleState.IDLE
+                        com.vdx.sonic.BubbleState.LISTENING -> BubbleState.LISTENING
+                        com.vdx.sonic.BubbleState.PROCESSING -> BubbleState.THINKING
+                        com.vdx.sonic.BubbleState.CLARIFICATION_REQUIRED -> BubbleState.IDLE
+                        com.vdx.sonic.BubbleState.EXECUTING -> BubbleState.EXECUTING
+                        com.vdx.sonic.BubbleState.DONE -> BubbleState.SPEAKING
+                        com.vdx.sonic.BubbleState.ERROR -> BubbleState.ERROR
+                        com.vdx.sonic.BubbleState.BLOCKED_PERMISSION -> BubbleState.ERROR
+                    }
+                }
+            }
+            onPartialTranscript = { text ->
+                handler.post { showTopToast("... $text") }
+            }
+            onClarification = { request ->
+                handler.post {
+                    speak(request.question)
+                    // Store pending clarification
+                    pendingClarification = request
+                }
+            }
+            onResult = { result ->
+                handler.post {
+                    when (result) {
+                        is ExecutionResult.Success -> {
+                            showExecutingOverlay(result.message)
+                            handler.postDelayed({
+                                hideExecutingOverlay()
+                                currentState = BubbleState.IDLE
+                            }, 2000)
+                        }
+                        is ExecutionResult.Failed -> {
+                            speak(result.reason)
+                            currentState = BubbleState.ERROR
+                            handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
+                        }
+                        is ExecutionResult.Cancelled -> {
+                            currentState = BubbleState.IDLE
+                        }
+                        else -> {}
+                    }
+                }
+            }
+            onError = { message ->
+                handler.post {
+                    speak(message)
+                    currentState = BubbleState.ERROR
+                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
+                }
+            }
+        }
+    }
+    private var pendingClarification: com.vdx.sonic.ClarificationRequest? = null
 
     private var currentState: BubbleState = BubbleState.IDLE
         set(value) {
@@ -703,8 +766,18 @@ class BubbleForegroundService : Service() {
 
     private fun onTap() {
         Log.d(TAG, "onTap: isListening=$isListening")
-        if (isListening) return
-        startVoiceCapture()
+        if (!isListening) {
+            // Start listening
+            isListening = true
+            currentState = BubbleState.LISTENING
+            showTopToast("🎤 Listening...")
+            startVoiceCapture()
+        } else {
+            // Stop listening and process
+            isListening = false
+            currentState = BubbleState.THINKING
+            stopVoiceCaptureAndProcess()
+        }
     }
 
     private fun onLongPress() {
@@ -811,6 +884,48 @@ class BubbleForegroundService : Service() {
         Log.d(TAG, "startVoiceCapture: calling startCapture()")
         voiceCaptureManager?.startCapture()
         Log.d(TAG, "startVoiceCapture: VoiceCaptureManager.startCapture called")
+    }
+
+    /**
+     * Stop voice capture and hand audio to SonicEngine for processing.
+     * Uses FreeFlow's timeout racing pattern: race ASR against a timeout.
+     */
+    private fun stopVoiceCaptureAndProcess() {
+        Log.d(TAG, "stopVoiceCaptureAndProcess: stopping capture")
+        val captureManager = voiceCaptureManager
+        if (captureManager == null) {
+            Log.w(TAG, "stopVoiceCaptureAndProcess: no capture manager")
+            currentState = BubbleState.IDLE
+            return
+        }
+
+        // Get captured audio data from the manager
+        // The VoiceCaptureManager stores the last captured audio
+        captureManager.stopCapture()
+
+        // Build capture session metadata
+        val a11y = VdxAccessibilityService.instance
+        val screenModel = if (a11y != null) {
+            sonicEngine.harness.readScreen(a11y)
+        } else null
+
+        val captureSession = CaptureSession(
+            audioData = ShortArray(0), // Will be populated by VoiceCaptureManager
+            timestamp = System.currentTimeMillis(),
+            foregroundPackage = screenModel?.packageName,
+            focusedFieldState = if (screenModel?.isEditableFieldFocused == true) {
+                FocusedFieldState(
+                    text = screenModel.focusedFieldText,
+                    hint = screenModel.focusedFieldHint,
+                    isEditable = true,
+                    bounds = null
+                )
+            } else null,
+            uiSnapshot = screenModel
+        )
+
+        // Process via SonicEngine
+        sonicEngine.process(captureSession)
     }
 
     // ──────────────────────────────────────────────────────────────────────
