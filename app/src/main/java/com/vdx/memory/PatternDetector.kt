@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
 class PatternDetector(private val context: Context) {
 
     private val dao = VdxMemoryDatabase.getInstance(context).actionLogDao()
-    private val memoryStore = UserMemoryStore(context)
+    private val memoryStore = MemoryStore(context)
     private val scope = CoroutineScope(Dispatchers.IO)
 
     companion object {

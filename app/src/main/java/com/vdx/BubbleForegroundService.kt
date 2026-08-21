@@ -19,6 +19,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.text.InputType
 import android.util.Log
@@ -27,7 +30,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.view.animation.RotateAnimation
 import android.view.animation.ScaleAnimation
@@ -39,11 +41,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import android.net.Uri
 import com.vdx.sonic.*
-import com.vdx.sonic.robot.RobotHand as SonicRobotHand
-import com.vdx.memory.UserMemoryStore
-import kotlinx.coroutines.*
 import java.util.Locale
 
 /**
@@ -108,14 +106,9 @@ class BubbleForegroundService : Service() {
     private var bubbleX = 0
     private var bubbleY = 0
 
-    private var voiceCaptureManager: VoiceCaptureManager? = null
+    private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
-    private val userMemoryStore by lazy { UserMemoryStore(this) }
-    private val sessionMemory = SessionMemory()
     private var isListening = false
-
-    private val llmBridge by lazy { LlmBridge(this) }
-    private val robotHand by lazy { RobotHand(this, tts) }
 
     // VDX Sonic engine
     private val sonicEngine: SonicEngine by lazy {
@@ -218,8 +211,8 @@ class BubbleForegroundService : Service() {
         bubbleView = null
         textOverlay?.let { windowManager?.removeView(it) }
         textOverlay = null
-        voiceCaptureManager?.stopCapture()
-        voiceCaptureManager = null
+        speechRecognizer?.destroy()
+        speechRecognizer = null
         tts?.stop()
         tts?.shutdown()
         Log.d(TAG, "onDestroy: service destroyed")
@@ -603,7 +596,7 @@ class BubbleForegroundService : Service() {
         // ISSUE 4: State-specific animations
         when (currentState) {
             BubbleState.IDLE -> startIdlePulse()           // (b) slow scale 1.0→1.1→1.0 every 2s
-            BubbleState.LISTENING -> startListeningPulse()  // (a) green + fast waveform pulse
+            BubbleState.LISTENING -> { /* onRmsChanged handles real-time scale */ }
             BubbleState.THINKING -> startThinkingSpin()    // (b) spinning progress indicator
             BubbleState.SPEAKING -> startSpeakingPulse()   // (d) blue + slow pulse
             BubbleState.ERROR -> shakeBubble(container)    // (e) red + shake
@@ -638,22 +631,6 @@ class BubbleForegroundService : Service() {
             Animation.RELATIVE_TO_SELF, 0.5f
         ).apply {
             duration = 1000
-            repeatMode = Animation.REVERSE
-            repeatCount = Animation.INFINITE
-        }
-        container.startAnimation(scaleAnim)
-        pulseRunnable = Runnable { container.startAnimation(scaleAnim) }
-    }
-
-    /** ISSUE 4(a): LISTENING — fast waveform-like scale animation (green color from stateColors) */
-    private fun startListeningPulse() {
-        val container = bubbleContainer ?: return
-        val scaleAnim = ScaleAnimation(
-            1f, 1.25f, 1f, 1.25f,
-            Animation.RELATIVE_TO_SELF, 0.5f,
-            Animation.RELATIVE_TO_SELF, 0.5f
-        ).apply {
-            duration = 200
             repeatMode = Animation.REVERSE
             repeatCount = Animation.INFINITE
         }
@@ -756,23 +733,8 @@ class BubbleForegroundService : Service() {
         executingOverlay = null
     }
 
-    private fun describeIntent(intent: VdxIntent): String {
-        return when (intent) {
-            is VdxIntent.Call      -> "Calling ${intent.contact}..."
-            is VdxIntent.WhatsApp  -> "WhatsApp ${intent.contact}..."
-            is VdxIntent.Sms       -> "SMS ${intent.contact}..."
-            is VdxIntent.Uber      -> "Uber to ${intent.destination}..."
-            is VdxIntent.YouTube   -> "YouTube: ${intent.searchQuery}..."
-            is VdxIntent.Email     -> "Email ${intent.contact}..."
-            is VdxIntent.AppLaunch -> "Opening ${intent.appName}..."
-            is VdxIntent.ReadSms   -> "Reading messages..."
-            is VdxIntent.ReadScreen-> "Reading screen..."
-            else -> intent::class.simpleName ?: "Working..."
-        }
-    }
-
     // ──────────────────────────────────────────────────────────────────────
-    // Interactions
+    // Voice Capture → Android SpeechRecognizer (no API keys, no VoiceCaptureManager)
     // ──────────────────────────────────────────────────────────────────────
 
     private fun onTap() {
@@ -789,120 +751,149 @@ class BubbleForegroundService : Service() {
     private fun onLongPress() {
         Log.d(TAG, "onLongPress: showing diagnostics")
         if (isListening) {
-            voiceCaptureManager?.stopCapture()
+            speechRecognizer?.stopListening()
             isListening = false
         }
         showDiagnosticsOverlay()
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Voice Capture → SonicEngine (single live path)
+    // Voice Capture → Android SpeechRecognizer (no API keys, no VoiceCaptureManager)
     // ──────────────────────────────────────────────────────────────────────
 
     private fun startVoiceCapture() {
-        Log.d(TAG, "startVoiceCapture: initializing capture-only VoiceCaptureManager")
+        Log.d(TAG, "startVoiceCapture: using Android SpeechRecognizer")
         if (isListening) {
             Log.w(TAG, "startVoiceCapture: already listening, ignoring")
             return
         }
         isListening = true
         currentState = BubbleState.LISTENING
-        showTopToast("🎤 Listening... tap again when done")
+        showTopToast("🎤 Listening...")
 
-        voiceCaptureManager = VoiceCaptureManager(
-            this,
-            object : VoiceCaptureManager.Callback {
-                override fun onSpeechStart() {
-                    Log.d(TAG, "VCM onSpeechStart")
-                }
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        }
+        val recognizer = speechRecognizer ?: run {
+            Log.e(TAG, "startVoiceCapture: SpeechRecognizer not available")
+            isListening = false
+            currentState = BubbleState.ERROR
+            speak("Speech recognition not available on this device")
+            return
+        }
 
-                override fun onSpeechEnd(audioData: ShortArray) {
-                    Log.d(TAG, "VCM onSpeechEnd (VAD): ${audioData.size} samples")
-                    handler.post {
-                        // Auto end-of-speech: only process if still in listening (user didn't tap stop)
-                        if (isListening && currentState == BubbleState.LISTENING) {
-                            isListening = false
-                            currentState = BubbleState.THINKING
-                            feedSonic(audioData)
-                        }
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                Log.d(TAG, "SR onReadyForSpeech")
+            }
+            override fun onBeginningOfSpeech() {
+                Log.d(TAG, "SR onBeginningOfSpeech")
+            }
+            override fun onRmsChanged(rmsdB: Float) {
+                val normalized = ((rmsdB + 60f) / 60f).coerceIn(0f, 1f)
+                val scaleBoost = normalized * 0.4f
+                handler.post {
+                    val container = bubbleContainer ?: return@post
+                    if (currentState == BubbleState.LISTENING) {
+                        val scale = 1f + scaleBoost
+                        container.scaleX = scale
+                        container.scaleY = scale
                     }
                 }
-
-                override fun onTranscript(text: String) {
-                    // Unused on Sonic path (processWithLlm=false)
-                    Log.d(TAG, "VCM onTranscript (ignored on Sonic path): $text")
+            }
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {
+                Log.d(TAG, "SR onEndOfSpeech")
+            }
+            override fun onError(error: Int) {
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_AUDIO -> "Audio error"
+                    SpeechRecognizer.ERROR_CLIENT -> "Client error"
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
+                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
+                    SpeechRecognizer.ERROR_SERVER -> "Server error"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech heard"
+                    else -> "Error $error"
                 }
-
-                override fun onError(message: String) {
-                    Log.e(TAG, "VCM onError: $message")
-                    handler.post {
-                        isListening = false
+                Log.e(TAG, "SR onError: $msg")
+                handler.post {
+                    isListening = false
+                    currentState = BubbleState.ERROR
+                    speak(msg)
+                    handler.postDelayed({
+                        currentState = BubbleState.IDLE
+                        showTextInputOverlay()
+                    }, 800)
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val transcript = texts?.firstOrNull()?.trim()
+                Log.d(TAG, "SR onResults: \"$transcript\"")
+                handler.post {
+                    isListening = false
+                    if (!transcript.isNullOrBlank()) {
+                        currentState = BubbleState.THINKING
+                        // Wake-word handling: "Hey Vision <command>" → strip the phrase,
+                        // process the command hands-free. Pure activation ("Hey Vision")
+                        // just re-arms listening for the follow-up command.
+                        val wake = com.vdx.sonic.voice.WakeWordDetector.detect(transcript)
+                        val command = if (wake.activated) wake.command else transcript
+                        if (wake.activated && wake.pureActivation) {
+                            currentState = BubbleState.LISTENING
+                            showTopToast("🎤 Listening...")
+                            speechRecognizer?.startListening(recognizerIntent())
+                            return@post
+                        }
+                        // Wrap Google STT as synthetic ASR result for full pipeline
+                        val syntheticResult = com.vdx.sonic.AsrResult(
+                            text = command,
+                            confidence = 0.85f,
+                            provider = "google"
+                        )
+                        sonicEngine.processFromText(command, syntheticResult)
+                    } else {
                         currentState = BubbleState.ERROR
-                        speak(message)
-                        handler.postDelayed({
-                            currentState = BubbleState.IDLE
-                            showTextInputOverlay()
-                        }, 800)
+                        speak("I didn't catch that")
+                        handler.postDelayed({ currentState = BubbleState.IDLE }, 1000)
                     }
                 }
-
-                override fun onAudioLevel(rmsdB: Float) {
-                    val normalized = ((rmsdB + 60f) / 60f).coerceIn(0f, 1f)
-                    val scaleBoost = normalized * 0.4f
-                    handler.post {
-                        val container = bubbleContainer ?: return@post
-                        if (currentState == BubbleState.LISTENING) {
-                            val scale = 1f + scaleBoost
-                            container.scaleX = scale
-                            container.scaleY = scale
-                        }
-                    }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val texts = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val partial = texts?.firstOrNull()
+                if (!partial.isNullOrBlank()) {
+                    handler.post { showTopToast("... $partial") }
                 }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
 
-                override fun onIntent(intent: VdxIntent) {
-                    // Unused on Sonic path
-                    Log.d(TAG, "VCM onIntent ignored on Sonic path: $intent")
-                }
-            },
-            processWithLlm = false
-        )
+        val intent = recognizerIntent()
+        recognizer.startListening(intent)
+    }
 
-        voiceCaptureManager?.startCapture()
+    /** Build the standard SpeechRecognizer intent (shared by first listen + wake-word re-arm). */
+    private fun recognizerIntent(): Intent {
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
     }
 
     /**
-     * Stop capture and hand PCM to SonicEngine.
+     * Stop listening. Called when user taps the bubble a second time.
      */
     private fun stopVoiceCaptureAndProcess() {
         Log.d(TAG, "stopVoiceCaptureAndProcess")
-        val captureManager = voiceCaptureManager
-        if (captureManager == null) {
-            currentState = BubbleState.IDLE
-            return
-        }
-        captureManager.stopCapture()
-        val audio = captureManager.consumeCapturedAudio()
-        feedSonic(audio)
-    }
-
-    private fun feedSonic(audioData: ShortArray) {
-        val a11y = VdxAccessibilityService.instance
-        val screenModel = if (a11y != null) sonicEngine.harness.readScreen(a11y) else null
-        val captureSession = CaptureSession(
-            audioData = audioData,
-            timestamp = System.currentTimeMillis(),
-            foregroundPackage = screenModel?.packageName,
-            focusedFieldState = if (screenModel?.isEditableFieldFocused == true) {
-                FocusedFieldState(
-                    text = screenModel.focusedFieldText,
-                    hint = screenModel.focusedFieldHint,
-                    isEditable = true,
-                    bounds = null
-                )
-            } else null,
-            uiSnapshot = screenModel
-        )
-        sonicEngine.process(captureSession)
+        speechRecognizer?.stopListening()
+        // If still listening, the onResults callback will fire with whatever was captured.
+        // If nothing was captured, onError(ERROR_NO_MATCH) fires instead.
     }
 
     private fun showDiagnosticsOverlay() {
@@ -942,7 +933,7 @@ class BubbleForegroundService : Service() {
         // Remove any existing overlay
         textOverlay?.let { windowManager?.removeView(it) }
 
-        currentState = BubbleState.LISTENING
+        // Don't overwrite current state — caller (onError, diagnostics) sets it
 
         val editText = EditText(this).apply {
             hint = "Type: call mom, whatsapp john, uber to airport..."
@@ -1044,316 +1035,6 @@ class BubbleForegroundService : Service() {
         textOverlay?.let {
             windowManager?.removeView(it)
             textOverlay = null
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Intent Handling
-    // ──────────────────────────────────────────────────────────────────────
-
-    private fun handleIntent(transcript: String) {
-        Log.d(TAG, "handleIntent: transcript=\"$transcript\"")
-        currentState = BubbleState.THINKING
-        // Run LLM extraction on a background thread, then dispatch on main thread
-        llmBridge.extractAsync(transcript) { result ->
-            Log.d(TAG, "handleIntent: parsed intent = ${result::class.simpleName} → $result")
-            // ISSUE 3(b): Show the parsed intent — Toast at top of screen
-            val intentDescription = result::class.simpleName ?: "Unknown"
-            showTopToast("Intent: $intentDescription")
-            Log.d(TAG, "Awareness: Intent parsed = $intentDescription")
-
-            when (result) {
-                // ── Memory: read from persistent user memory store ──
-                is VdxIntent.Memory -> {
-                    Log.d(TAG, "handleIntent: Memory intent — reading user memory")
-                    // Run on IO thread
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                        val count = userMemoryStore.count()
-                        val top = userMemoryStore.getTopMemories()
-                        val summary = if (count == 0) {
-                            "No memories stored yet."
-                        } else {
-                            val items = top.take(5).joinToString(". ") { "${it.key}: ${it.value}" }
-                            "You have $count memories. Top: $items"
-                        }
-                        handler.post {
-                            speak(summary)
-                            currentState = BubbleState.SPEAKING
-                            handler.postDelayed({ currentState = BubbleState.IDLE }, 3000)
-                        }
-                    }
-                }
-
-                // ── Clarification: speak the question ──
-                is VdxIntent.Clarification -> {
-                    Log.d(TAG, "handleIntent: Clarification — question=\"${result.question}\"")
-                    sessionMemory.add("Clarification: ${result.question}")
-                    currentState = BubbleState.SPEAKING
-                    speak(result.question)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 3000)
-                }
-
-                // ── Unknown: try text insertion via accessibility, then speak capabilities ──
-                is VdxIntent.Unknown -> {
-                    Log.d(TAG, "handleIntent: Unknown intent — trying text insertion")
-                    val a11y = VdxAccessibilityService.instance
-                    if (a11y != null) {
-                        val focused = a11y.findFocusedTextField()
-                        if (focused != null) {
-                            Log.d(TAG, "handleIntent: found focused text field, inserting transcript")
-                            val inserted = a11y.insertText(focused, transcript)
-                            if (inserted) {
-                                speak("Inserted text.")
-                                currentState = BubbleState.SPEAKING
-                                handler.postDelayed({ currentState = BubbleState.IDLE }, 1500)
-                                return@extractAsync
-                            } else {
-                                Log.w(TAG, "handleIntent: text insertion failed")
-                            }
-                        } else {
-                            Log.d(TAG, "handleIntent: no focused text field found")
-                        }
-                    } else {
-                        Log.w(TAG, "handleIntent: accessibility service not running")
-                    }
-                    // No text field or accessibility not enabled → speak capabilities
-                    speak("I can: call, whatsapp, sms, uber, youtube, email, open apps, read messages, read screen, memory")
-                    currentState = BubbleState.SPEAKING
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2500)
-                }
-
-                // ── All action intents: dispatch to RobotHand ──
-                else -> {
-                    sessionMemory.add("${result::class.simpleName} → $result")
-                    currentState = BubbleState.EXECUTING
-                    executeWithRobotHand(result)
-                }
-            }
-        }
-    }
-
-    /**
-     * Handle a pre-parsed VdxIntent from voice capture (Gemini multimodal).
-     * Skips LLM extraction since the intent is already structured.
-     */
-    private fun handleIntentFromVoice(intent: VdxIntent) {
-        Log.d(TAG, "handleIntentFromVoice: $intent")
-        currentState = BubbleState.THINKING
-        val intentDescription = intent::class.simpleName ?: "Unknown"
-        showTopToast("Intent: $intentDescription")
-
-        when (intent) {
-            is VdxIntent.Memory -> {
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    val count = userMemoryStore.count()
-                    val top = userMemoryStore.getTopMemories()
-                    val summary = if (count == 0) {
-                        "No memories stored yet."
-                    } else {
-                        "I remember ${count} things. Top: ${top.take(3).joinToString { it.key }}"
-                    }
-                    handler.post {
-                        speak(summary)
-                        currentState = BubbleState.IDLE
-                    }
-                }
-            }
-            is VdxIntent.Clarification -> {
-                sessionMemory.add("Clarification: ${intent.question}")
-                speak(intent.question)
-                currentState = BubbleState.IDLE
-            }
-            is VdxIntent.Unknown -> {
-                sessionMemory.add("Unknown: ${intent.raw}")
-                speak("I didn't understand. Try: call, whatsapp, uber, youtube, sms, email, open.")
-                currentState = BubbleState.IDLE
-            }
-            else -> {
-                sessionMemory.add("${intent::class.simpleName} → $intent")
-                currentState = BubbleState.EXECUTING
-                executeWithRobotHand(intent)
-            }
-        }
-    }
-
-    /**
-     * Execute a [VdxIntent] via RobotHand on a background thread.
-     * RobotHand walks the accessibility tree inside target apps.
-     * If RobotHand fails, falls back to deep-link navigation.
-     */
-    private fun executeWithRobotHand(intent: VdxIntent) {
-        val intentName = intent::class.simpleName
-        Log.d(TAG, "executeWithRobotHand: dispatching $intentName to RobotHand")
-
-        // ISSUE 3(c): Show what's being executed — Toast at top of screen
-        val action = intentName ?: "action"
-        showTopToast("Executing: $action")
-        Log.d(TAG, "Awareness: Executing $action")
-
-        // ISSUE 4(c): Show text overlay near bubble with action description
-        showExecutingOverlay(describeIntent(intent))
-
-        Thread {
-            try {
-                val resultStr = robotHand.execute(intent)
-                Log.d(TAG, "executeWithRobotHand: RobotHand result for $intentName = \"$resultStr\"")
-                handler.post {
-                    hideExecutingOverlay()
-                    currentState = BubbleState.SPEAKING
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "executeWithRobotHand: RobotHand failed for $intentName", e)
-                handler.post {
-                    hideExecutingOverlay()
-                    Log.w(TAG, "executeWithRobotHand: falling back to deep link for $intentName")
-                    fallbackDeepLink(intent)
-                }
-            }
-        }.start()
-    }
-
-    /**
-     * Fallback deep-link navigation — used when RobotHand fails.
-     * Launches intents via URI schemes (wa.me, tel:, smsto:, etc.).
-     */
-    private fun fallbackDeepLink(intent: VdxIntent) {
-        Log.w(TAG, "fallbackDeepLink: ${intent::class.simpleName}")
-        hideExecutingOverlay()
-        try {
-            when (intent) {
-                is VdxIntent.WhatsApp -> {
-                    speak("Opening WhatsApp for ${intent.contact}.")
-                    val waIntent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse("https://wa.me/${intent.contact}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(waIntent)
-                    handler.postDelayed({ currentState = BubbleState.SPEAKING }, 500)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-
-                is VdxIntent.Call -> {
-                    speak("Calling ${intent.contact}.")
-                    val callIntent = Intent(Intent.ACTION_DIAL).apply {
-                        data = Uri.parse("tel:${intent.contact}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(callIntent)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 1500)
-                }
-
-                is VdxIntent.Sms -> {
-                    speak("Opening messages for ${intent.contact}.")
-                    val smsIntent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse("smsto:${intent.contact}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(smsIntent)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-
-                is VdxIntent.ReadSms -> {
-                    speak("Opening messages.")
-                    val smsIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_APP_MESSAGING)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(smsIntent)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 1500)
-                }
-
-                is VdxIntent.Uber -> {
-                    speak("Opening Uber for ${intent.destination}.")
-                    val uberIntent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse(
-                            "https://m.uber.com/ul?action=setPickup&pickup=my_location" +
-                            "&drop[formatted_address]=${intent.destination}"
-                        )
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    try {
-                        startActivity(uberIntent)
-                        handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "fallbackDeepLink: Uber deep link failed, trying maps", e)
-                        val mapsIntent = Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse("https://maps.google.com/?q=${intent.destination}")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(mapsIntent)
-                        speak("Uber not available. Opened maps instead.")
-                        handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                    }
-                }
-
-                is VdxIntent.YouTube -> {
-                    speak("Searching YouTube for ${intent.searchQuery}.")
-                    val ytIntent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse("https://www.youtube.com/results?search_query=${intent.searchQuery}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(ytIntent)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-
-                is VdxIntent.Email -> {
-                    speak("Opening email for ${intent.contact}.")
-                    val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
-                        data = Uri.parse("mailto:${intent.contact}")
-                        putExtra(Intent.EXTRA_TEXT, intent.message)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(emailIntent)
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-
-                is VdxIntent.AppLaunch -> {
-                    speak("Opening ${intent.appName}.")
-                    val launchIntent = packageManager.getLaunchIntentForPackage(intent.appName)
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(launchIntent)
-                    } else {
-                        val searchIntent = Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse("market://details?id=${intent.appName}")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        try {
-                            startActivity(searchIntent)
-                        } catch (e: Exception) {
-                            speak("Could not find ${intent.appName}.")
-                            currentState = BubbleState.ERROR
-                            handler.postDelayed({ currentState = BubbleState.IDLE }, 1500)
-                            return
-                        }
-                    }
-                    handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                }
-
-                is VdxIntent.ReadScreen -> {
-                    val a11y = VdxAccessibilityService.instance
-                    if (a11y != null) {
-                        speak("Reading screen.")
-                        handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
-                    } else {
-                        speak("Accessibility service not enabled. Enable it in settings.")
-                        currentState = BubbleState.ERROR
-                        handler.postDelayed({ currentState = BubbleState.IDLE }, 2500)
-                    }
-                }
-
-                // Memory, Clarification, Unknown are handled before this fallback
-                else -> {
-                    Log.w(TAG, "fallbackDeepLink: unexpected intent ${intent::class.simpleName}")
-                    currentState = BubbleState.IDLE
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "fallbackDeepLink: deep link also failed for ${intent::class.simpleName}", e)
-            currentState = BubbleState.ERROR
-            speak("Could not complete action.")
-            handler.postDelayed({ currentState = BubbleState.IDLE }, 1500)
         }
     }
 }

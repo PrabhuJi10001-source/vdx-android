@@ -333,6 +333,38 @@ class IntentParser {
             return SonicIntent(IntentMode.COMMAND, IntentType.GO_HOME, rawText = text, confidence = HIGH)
         }
 
+        // GESTURES — tap / scroll (task-spec grammar: 'tap', 'scroll down', 'read screen', 'go back')
+        Regex("""^(?:please\s+)?(?:tap|click|press)\s+(?:on\s+)?(.+)$""").find(t)?.let { m ->
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.GESTURE, rawText = text, confidence = HIGH,
+                entities = mapOf("action" to "tap", "target" to m.groupValues[1].trim())
+            )
+        }
+        if (t == "tap" || t == "click" || t == "press") {
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.GESTURE, rawText = text, confidence = MED,
+                entities = mapOf("action" to "tap")
+            )
+        }
+        Regex("""^(?:please\s+)?scroll\s+(down|up|left|right)$""").find(t)?.let { m ->
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.GESTURE, rawText = text, confidence = HIGH,
+                entities = mapOf("action" to "scroll", "direction" to m.groupValues[1])
+            )
+        }
+        if (t.contains("scroll") && (t.contains("down") || t.contains("up") || t.contains("left") || t.contains("right"))) {
+            val dir = when {
+                t.contains("down") -> "down"
+                t.contains("up") -> "up"
+                t.contains("left") -> "left"
+                else -> "right"
+            }
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.GESTURE, rawText = text, confidence = MED,
+                entities = mapOf("action" to "scroll", "direction" to dir)
+            )
+        }
+
         if (t.contains("read") && (t.contains("screen") || t.contains("this") || t.contains("page") || t.contains("aloud"))) {
             return SonicIntent(IntentMode.READ, IntentType.READ_SCREEN, rawText = text, confidence = HIGH)
         }

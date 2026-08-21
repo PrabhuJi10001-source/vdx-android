@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 class VdxMemoryTest {
 
     private lateinit var context: Context
-    private lateinit var memoryStore: UserMemoryStore
+    private lateinit var memoryStore: MemoryStore
     private lateinit var patternDetector: PatternDetector
     private lateinit var contextHydrator: ContextHydrator
     private lateinit var llmCache: LlmCache
@@ -29,7 +29,7 @@ class VdxMemoryTest {
     fun setUp() {
         VdxMemoryDatabase.resetForTests()
         context = ApplicationProvider.getApplicationContext()
-        memoryStore = UserMemoryStore(context)
+        memoryStore = MemoryStore(context)
         patternDetector = PatternDetector(context)
         contextHydrator = ContextHydrator(context)
         llmCache = LlmCache(maxSize = 50)
@@ -65,7 +65,7 @@ class VdxMemoryTest {
         memoryStore.remember("contact", "ravi", "colleague", "works at Google")
         val results = memoryStore.search("ravi")
         assertTrue(results.isNotEmpty())
-        assertEquals("ravi", results.first().key)
+        assertEquals("ravi", results.first().name)
     }
 
     @Test
@@ -81,8 +81,8 @@ class VdxMemoryTest {
         memoryStore.remember("contact", "test_count", "value")
         memoryStore.recall("test_count")
         memoryStore.recall("test_count")
-        val mem = memoryStore.getMemoryByKey("test_count")
-        assertEquals(2, mem?.accessCount)
+        val mem = memoryStore.search("test_count").firstOrNull()
+        assertEquals(2, mem?.reads7d)
     }
 
     @Test
@@ -91,7 +91,7 @@ class VdxMemoryTest {
         repeat(5) { memoryStore.recall("frequent") }
         val top = memoryStore.getTopMemories()
         assertTrue(top.isNotEmpty())
-        assertEquals("frequent", top.first().key)
+        assertEquals("frequent", top.first().name)
     }
 
     // ──────────────────────────────────────────────────────────────

@@ -233,6 +233,106 @@ class SonicEngine(
         }
     }
 
+    /**
+     * Process text from Google SpeechRecognizer through the full Sonic pipeline
+     * with ASR confidence gating, diagnostics, cleanup, entity repair, intent parse,
+     * plan, execute, and memory logging — same path as raw-audio process().
+     */
+    fun processFromText(text: String, asrResult: AsrResult) {
+        currentJob?.cancel()
+        currentJob = scope.launch {
+            try {
+                if (!diagnostics.isReady()) {
+                    val blockers = diagnostics.getBlockers()
+                    onStateChange?.invoke(BubbleState.BLOCKED_PERMISSION)
+                    onError?.invoke(blockers.firstOrNull() ?: "System not ready")
+                    return@launch
+                }
+
+                onStateChange?.invoke(BubbleState.PROCESSING)
+
+                if (asrResult.text.isBlank() || asrResult.confidence < 0.3f) {
+                    onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
+                    onClarification?.invoke(
+                        ClarificationRequest(
+                            id = java.util.UUID.randomUUID().toString(),
+                            question = "I didn't catch that. Could you say it again?",
+                            type = ClarificationType.AMBIGUOUS_INTENT
+                        )
+                    )
+                    return@launch
+                }
+
+                onPartialTranscript?.invoke(asrResult.text)
+
+                val cleanedText = cleanup(text)
+                val screenModel = harness.readScreen(getAccessibilityService())
+                val repairResult = entityRepair.repair(
+                    transcript = cleanedText,
+                    screenModel = screenModel,
+                    vocabulary = getVocabulary(),
+                    contacts = getContacts()
+                )
+
+                val intent = intentParser.parse(repairResult.repairedText)
+                val clarificationRequest = clarification.evaluate(intent, repairResult)
+                if (clarificationRequest != null) {
+                    onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
+                    onClarification?.invoke(clarificationRequest)
+                    return@launch
+                }
+
+                val plan = planner.plan(intent, screenModel, harness)
+                onStateChange?.invoke(BubbleState.EXECUTING)
+                val result = sonicRobot.execute(plan)
+
+                // Record episode for V2 memory
+                memoryStore.recordEpisode(
+                    goal = intent.rawText,
+                    action = intent.type.name.lowercase(),
+                    target = intent.entities.values.firstOrNull().orEmpty(),
+                    outcome = if (result is ExecutionResult.Success) "success" else "failure",
+                    errorDetail = (result as? ExecutionResult.Failed)?.reason.orEmpty()
+                )
+
+                when (result) {
+                    is ExecutionResult.ClarificationNeeded -> {
+                        onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
+                        onClarification?.invoke(
+                            ClarificationRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                question = result.question,
+                                type = ClarificationType.AMBIGUOUS_INTENT,
+                                context = result.context
+                            )
+                        )
+                    }
+                    is ExecutionResult.ConfirmationNeeded -> {
+                        onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
+                        onClarification?.invoke(
+                            ClarificationRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                question = result.prompt,
+                                type = ClarificationType.ACTION_CONFIRMATION,
+                                context = plan.intent
+                            )
+                        )
+                    }
+                    else -> {
+                        onStateChange?.invoke(
+                            if (result is ExecutionResult.Success) BubbleState.DONE else BubbleState.ERROR
+                        )
+                        onResult?.invoke(result)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "processFromText failed", e)
+                onStateChange?.invoke(BubbleState.ERROR)
+                onError?.invoke(e.message ?: "Unknown error")
+            }
+        }
+    }
+
     fun handleClarificationResponse(request: ClarificationRequest, response: String) {
         val base = request.context ?: return
         val updatedIntent = clarification.handleResponse(request, response, base)

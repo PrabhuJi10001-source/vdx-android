@@ -52,6 +52,15 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
             private set
 
         /**
+         * Shared screen-content extractor — the "eyes" of the app. Wired into
+         * [onAccessibilityEvent] so content changes invalidate and re-extract,
+         * and available to [BubbleForegroundService] for on-demand snapshots.
+         */
+        @Volatile
+        var screenExtractor: ScreenContentExtractor? = null
+            private set
+
+        /**
          * Set by [onAccessibilityEvent] whenever an editable text field receives focus.
          * The bubble service can poll this to know whether the IME / custom keyboard
          * should be surfaced.
@@ -73,6 +82,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         super.onServiceConnected()
         instance = this
         isRunning = true
+        screenExtractor = ScreenContentExtractor()
         Log.i(TAG, "VDX Accessibility Service connected — TalkBack replacement active")
     }
 
@@ -80,6 +90,9 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         if (event == null) return
 
         val eventType = event.eventType
+
+        // Feed content-change events to the extractor so the cache stays fresh.
+        screenExtractor?.onContentChanged(event)
 
         // Detect text-field focus — report to bubble service
         if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
@@ -107,6 +120,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         instance = null
         isRunning = false
         focusedTextField = null
+        screenExtractor = null
         serviceJob.cancel()
         Log.i(TAG, "VDX Accessibility Service destroyed")
     }

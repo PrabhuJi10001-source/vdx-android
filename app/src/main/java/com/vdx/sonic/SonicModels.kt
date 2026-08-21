@@ -134,6 +134,9 @@ enum class IntentType {
     READ_PDF,
     DESCRIBE_IMAGE,
 
+    // Gestures (tap / scroll)
+    GESTURE,
+
     // System
     SYSTEM_QUERY,
     SYSTEM_TOGGLE,

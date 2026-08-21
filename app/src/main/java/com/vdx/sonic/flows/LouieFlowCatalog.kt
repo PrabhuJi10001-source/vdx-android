@@ -30,6 +30,7 @@ object LouieFlowCatalog {
             IntentType.PLAY_STORE -> playStoreFlow(intent, next)
             IntentType.APP_LAUNCH, IntentType.APP_SWITCH -> appLaunchFlow(intent, next)
             IntentType.GO_BACK -> listOf(ActionStep(next(), ActionPrimitive.GoBack, "Go back"))
+            IntentType.GESTURE -> gestureFlow(intent, next)
             IntentType.GO_HOME -> listOf(
                 ActionStep(next(), ActionPrimitive.SystemAction("home"), "Go home")
             )
@@ -561,5 +562,41 @@ object LouieFlowCatalog {
             ActionStep(next(), ActionPrimitive.OpenApp("com.google.android.apps.docs.editors.docs"), "Open docs/PDF viewer"),
             ActionStep(next(), ActionPrimitive.ReadVisibleResult(NodeSelector()), "Read PDF text via a11y")
         )
+    }
+
+    private fun gestureFlow(intent: SonicIntent, next: () -> String): List<ActionStep> {
+        val action = intent.entities["action"] ?: "tap"
+        return when (action) {
+            "scroll" -> {
+                val dir = intent.entities["direction"] ?: "down"
+                val scrollDir = when (dir) {
+                    "up" -> ScrollDirection.UP
+                    "left" -> ScrollDirection.LEFT
+                    "right" -> ScrollDirection.RIGHT
+                    else -> ScrollDirection.DOWN
+                }
+                listOf(
+                    ActionStep(
+                        next(),
+                        ActionPrimitive.ScrollContainer(NodeSelector(), scrollDir),
+                        "Scroll $dir"
+                    )
+                )
+            }
+            else -> {
+                val target = intent.entities["target"]
+                listOf(
+                    ActionStep(
+                        next(),
+                        if (target.isNullOrBlank()) {
+                            ActionPrimitive.DispatchGesture(0.5f, 0.5f, GestureType.TAP)
+                        } else {
+                            ActionPrimitive.ClickNode(NodeSelector(text = target))
+                        },
+                        "Tap ${target ?: "center"}"
+                    )
+                )
+            }
+        }
     }
 }

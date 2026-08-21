@@ -22,7 +22,7 @@ import kotlinx.coroutines.runBlocking
  */
 class ContextHydrator(private val context: Context) {
 
-    private val memoryStore = UserMemoryStore(context)
+    private val memoryStore = MemoryStore(context)
     private val scope = CoroutineScope(Dispatchers.IO)
 
     /**
@@ -43,7 +43,7 @@ class ContextHydrator(private val context: Context) {
         // Check each word against stored memories
         for (word in words) {
             val memory = memoryStore.recall(word) ?: continue
-            val memObj = memoryStore.getMemoryByKey(word)
+            val memObj = memoryStore.search(word).firstOrNull()
             if (memObj != null) {
                 resolved.add(ResolvedEntity(
                     key = word,
@@ -58,7 +58,7 @@ class ContextHydrator(private val context: Context) {
         // by checking the full transcript as a key
         val fullMatch = memoryStore.recall(t)
         if (fullMatch != null) {
-            val memObj = memoryStore.getMemoryByKey(t)
+            val memObj = memoryStore.search(t).firstOrNull()
             if (memObj != null) {
                 resolved.add(ResolvedEntity(
                     key = t,
