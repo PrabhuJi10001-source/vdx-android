@@ -1,0 +1,36 @@
+# VDX Android — Cursor Rules
+
+## Product bar (canonical)
+- Spec: ~/vdx/docs/VDX_PRODUCT_SPEC.md — **Louie task parity + better**, Wispr Flow speak/click, low vision primary
+- Benchmark: everything Louie can do (WhatsApp, Uber, YouTube, Gmail, Contacts/SMS/Calls, web, store, system, PDF/OCR)
+- Interaction: user chooses when to speak (bubble tap) and when to click — NOT Louie continuous beep-menus
+- Audience: low vision who can read; completely blind TalkBack-replacement is out of V1 scope
+
+## Architecture
+- Live path: BubbleForegroundService → VoiceCaptureManager (PCM) → SonicEngine → Planner (adapters) → com.vdx.sonic.robot.RobotHand
+- Legacy path retained for MainActivity harness: VdxIntent → com.vdx.RobotHand
+- App adapters must grow to Louie depth per package — “open app” alone is not done
+- Long-press → diagnostics / keyboard fallback
+
+## Spec docs
+- ~/vdx/docs/VDX_PRODUCT_SPEC.md — canonical product brief
+- ~/vdx/docs/vdx-sonic-architecture.md — 10-layer architecture
+- ~/vdx/docs/v2-complete-plan.md — V2 memory graph
+- ~/vdx/aef/GOVERNANCE/ADRS/ — ADRs
+
+## Coding rules
+1. No reflection — use VdxAccessibilityService.instance / BubbleForegroundService.isRunning
+2. No Thread.sleep() in suspend functions — use delay()
+3. Bound tree traversal (max depth 5, max nodes 100)
+4. Confirm destructive actions (send / book / call / delete)
+5. Test before push: ./gradlew.bat testDebugUnitTest
+6. Spec compliance = Louie depth for the domain, not shallow happy path
+
+## Code review checklist
+1. Dual-path execution (old vs Sonic)
+2. Reflection-based service access
+3. Thread.sleep() in coroutines
+4. Unbounded accessibility tree traversal
+5. Dead code / unused paths
+6. Louie parity for the touched app domain
+7. Wispr speak/click preserved (no forced continuous dialogue)

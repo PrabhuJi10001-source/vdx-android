@@ -110,6 +110,7 @@ enum class IntentType {
     WHATSAPP,
     SMS,
     EMAIL,
+    CONTACT_MANAGE,
 
     // Transport
     BOOK_RIDE,
@@ -120,17 +121,23 @@ enum class IntentType {
     GO_BACK,
     GO_HOME,
 
-    // Search
+    // Search / media
     SEARCH,
     YOUTUBE_SEARCH,
+    YOUTUBE_CONTROL,
+    PLAY_STORE,
 
-    // Screen reading
+    // Screen / docs
     READ_SCREEN,
     READ_FOCUSED,
     READ_NOTIFICATIONS,
+    READ_PDF,
+    DESCRIBE_IMAGE,
 
     // System
     SYSTEM_QUERY,
+    SYSTEM_TOGGLE,
+    SET_ALARM,
     SETTINGS_NAVIGATION,
 
     // Editing
@@ -195,6 +202,8 @@ sealed class ActionPrimitive {
     data class DispatchGesture(val x: Float, val y: Float, val type: GestureType) : ActionPrimitive()
     object GoBack : ActionPrimitive()
     data class FailWithReason(val reason: String) : ActionPrimitive()
+    /** Direct Android system / intent actions (Louie system parity). */
+    data class SystemAction(val name: String, val params: Map<String, String> = emptyMap()) : ActionPrimitive()
 }
 
 data class NodeSelector(

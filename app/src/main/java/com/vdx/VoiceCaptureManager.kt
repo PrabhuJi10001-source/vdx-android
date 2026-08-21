@@ -48,7 +48,12 @@ import java.util.concurrent.Executors
  */
 class VoiceCaptureManager(
     private val context: Context,
-    private val callback: Callback
+    private val callback: Callback,
+    /**
+     * When false (Sonic path), capture ends deliver audio only — no Gemini multimodal.
+     * When true (legacy), finishCapture also runs Gemini transcript+intent.
+     */
+    private val processWithLlm: Boolean = false
 ) {
 
     interface Callback {
@@ -104,6 +109,9 @@ Examples: "uh message Ravi on WhatsApp that I'll be 10 minutes late" → {transc
     private var speechStarted = false
     private var silenceStartMs: Long = 0L
     private var captureStartMs: Long = 0L
+
+    /** Last finished capture (PCM16 mono 16kHz). Cleared after [consumeCapturedAudio]. */
+    @Volatile private var lastCapturedAudio: ShortArray = ShortArray(0)
 
     // Dedicated high-priority audio thread — never blocks Dispatchers.Default
     private val audioExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -221,17 +229,38 @@ Examples: "uh message Ravi on WhatsApp that I'll be 10 minutes late" → {transc
 
     /**
      * Stop capturing immediately and release resources.
+     * Preserves collected samples in [lastCapturedAudio] without notifying callbacks
+     * (caller decides whether to feed Sonic or wait for VAD [finishCapture]).
      */
     fun stopCapture() {
         Log.d(TAG, "stopCapture: called")
+        val wasCapturing = isCapturing
         isCapturing = false
         captureJob?.cancel()
         captureJob = null
-        audioRecord?.stop()
+        try {
+            audioRecord?.stop()
+        } catch (_: Exception) { }
         audioRecord?.release()
         audioRecord = null
-        Log.d(TAG, "stopCapture: AudioRecord released")
+
+        if (wasCapturing && collectedAudio.isNotEmpty()) {
+            lastCapturedAudio = collectedAudio.toShortArray()
+            collectedAudio.clear()
+            Log.d(TAG, "stopCapture: stored ${lastCapturedAudio.size} samples")
+        } else {
+            Log.d(TAG, "stopCapture: AudioRecord released (no samples)")
+        }
     }
+
+    /** Return and clear the last captured PCM buffer. */
+    fun consumeCapturedAudio(): ShortArray {
+        val data = lastCapturedAudio
+        lastCapturedAudio = ShortArray(0)
+        return data
+    }
+
+    fun peekCapturedAudio(): ShortArray = lastCapturedAudio
 
     // ──────────────────────────────────────────────────────────────────
     // Capture Loop (background thread)
@@ -326,15 +355,23 @@ Examples: "uh message Ravi on WhatsApp that I'll be 10 minutes late" → {transc
     private fun finishCapture() {
         Log.d(TAG, "finishCapture: stopping, ${collectedAudio.size} samples collected")
         isCapturing = false
-        audioRecord?.stop()
+        try {
+            audioRecord?.stop()
+        } catch (_: Exception) { }
         audioRecord?.release()
         audioRecord = null
 
         val audioData = collectedAudio.toShortArray()
         collectedAudio.clear()
+        lastCapturedAudio = audioData
         callback.onSpeechEnd(audioData)
 
-        // Check for API key
+        // Sonic path: audio only — BubbleForegroundService feeds SonicEngine
+        if (!processWithLlm) {
+            Log.d(TAG, "finishCapture: capture-only mode (Sonic), skipping Gemini")
+            return
+        }
+
         val apiKey = getApiKey()
         if (apiKey.isNullOrBlank()) {
             Log.d(TAG, "finishCapture: no API key, delivering fallback")

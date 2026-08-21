@@ -27,10 +27,7 @@ class LlmCache(maxSize: Int = 50) {
     )
 
     private val cache = object : LruCache<String, CacheEntry>(maxSize) {
-        override fun sizeOf(key: String, value: CacheEntry): Int {
-            // Rough size estimate: key + response chars
-            return key.length + value.rawResponse.length
-        }
+        override fun sizeOf(key: String, value: CacheEntry): Int = 1
     }
 
     /**

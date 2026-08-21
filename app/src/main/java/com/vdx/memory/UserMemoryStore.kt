@@ -1,83 +1,61 @@
 package com.vdx.memory
 
 import android.content.Context
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
- * UserMemoryStore — high-level API for reading/writing user memories.
- *
- * Replaces the old in-memory [com.vdx.SessionMemory] with persistent Room storage.
- * Memories survive app restarts and grow over time.
- *
- * Usage:
- * ```
- * val store = UserMemoryStore(context)
- * store.remember("contact", "mom", "+971501234567", "Mom's phone number")
- * val momNumber = store.recall("mom")  // returns "+971501234567"
- * ```
+ * Compatibility facade over [MemoryStore] for existing callers/tests.
+ * Maps flat key/value API onto V2 graph nodes.
  */
-class UserMemoryStore(private val context: Context) {
+class UserMemoryStore(context: Context) {
 
-    private val dao = VdxMemoryDatabase.getInstance(context).userMemoryDao()
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val store = MemoryStore(context)
 
-    /** Store a memory. Async — returns immediately. */
     fun remember(type: String, key: String, value: String, context: String = "") {
-        scope.launch {
-            val existing = dao.getByKey(key)
-            if (existing != null) {
-                dao.upsert(existing.copy(
-                    type = type,
-                    value = value,
-                    context = context,
-                    updatedAt = System.currentTimeMillis()
-                ))
-            } else {
-                dao.upsert(UserMemory(
-                    type = type,
-                    key = key,
-                    value = value,
-                    context = context
-                ))
-            }
-        }
+        store.remember(type, key, value, context, aliases = key.lowercase())
     }
 
-    /** Retrieve a memory by key. Returns null if not found. */
-    suspend fun recall(key: String): String? {
-        val memory = dao.getByKey(key) ?: return null
-        dao.incrementAccess(memory.id)
-        return memory.value
+    suspend fun recall(key: String): String? = store.recall(key)
+
+    fun recallSync(key: String): String? = store.recallSync(key)
+
+    suspend fun getMemoryByKey(key: String): UserMemory? {
+        val nodes = store.search(key)
+        val node = nodes.firstOrNull { it.name.equals(key, ignoreCase = true) } ?: return null
+        return UserMemory(
+            id = node.id,
+            type = node.type,
+            key = node.name,
+            value = node.value,
+            context = node.context,
+            createdAt = node.createdAt,
+            updatedAt = node.updatedAt,
+            accessCount = node.reads30d
+        )
     }
 
-    /** Synchronous recall for use in non-coroutine contexts (e.g. PatternDetector). */
-    fun recallSync(key: String): String? {
-        return try {
-            kotlinx.coroutines.runBlocking { recall(key) }
-        } catch (e: Exception) {
-            null
-        }
-    }
+    suspend fun search(query: String): List<UserMemory> =
+        store.search(query).map { it.toUserMemory() }
 
-    /** Get the full UserMemory object by key (not just the value). */
-    suspend fun getMemoryByKey(key: String): UserMemory? = dao.getByKey(key)
+    suspend fun getByType(type: String): List<UserMemory> =
+        store.getByType(type).map { it.toUserMemory() }
 
-    /** Search memories by keyword. */
-    suspend fun search(query: String): List<UserMemory> = dao.search(query)
+    suspend fun getTopMemories(): List<UserMemory> =
+        store.getTopMemories().map { it.toUserMemory() }
 
-    /** Get all memories of a type. */
-    suspend fun getByType(type: String): List<UserMemory> = dao.getByType(type)
-
-    /** Get the most frequently accessed memories. */
-    suspend fun getTopMemories(): List<UserMemory> = dao.getTopMemories()
-
-    /** Delete a memory by key. */
     fun forget(key: String) {
-        scope.launch { dao.deleteByKey(key) }
+        store.forget(key)
     }
 
-    /** Total memory count. */
-    suspend fun count(): Int = dao.count()
+    suspend fun count(): Int = store.count()
+
+    private fun MemoryNode.toUserMemory() = UserMemory(
+        id = id,
+        type = type,
+        key = name,
+        value = value,
+        context = context,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+        accessCount = reads30d
+    )
 }

@@ -12,6 +12,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.vdx.sonic.*
 import com.vdx.sonic.harness.Harness
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 /**
@@ -38,6 +39,7 @@ class RobotHand(
 
     private var tts: TextToSpeech? = null
     private var currentStepIndex = 0
+    private val systemController by lazy { com.vdx.sonic.system.SystemController(context) }
 
     /**
      * Execute a full execution plan step by step.
@@ -64,9 +66,9 @@ class RobotHand(
                 return result
             }
 
-            // Postcondition delay
+            // Postcondition delay — use coroutine delay, not Thread.sleep
             if (step.expectedPostcondition != null) {
-                Thread.sleep(STEP_DELAY_MS)
+                delay(STEP_DELAY_MS)
             }
         }
 
@@ -173,12 +175,17 @@ class RobotHand(
             is ActionPrimitive.ReadVisibleResult -> {
                 val screen = harness.readScreen(a11y)
                 val text = screen.elements.mapNotNull { it.text ?: it.contentDescription }
+                    .filter { it.length in 2..80 }
+                    .distinct()
+                    .take(6)
                     .joinToString(". ")
-                speak(text)
-                ExecutionResult.Success(text, 1)
+                // Quiet UX: speak a short summary, not the whole tree (beats Louie chatter)
+                if (text.isNotBlank()) speak(text.take(160))
+                ExecutionResult.Success(text.ifBlank { "Screen read" }, 1)
             }
 
             is ActionPrimitive.AskUser -> {
+                // One short question only
                 speak(action.question)
                 ExecutionResult.ClarificationNeeded(action.question, plan.intent)
             }
@@ -202,18 +209,58 @@ class RobotHand(
             is ActionPrimitive.FailWithReason -> {
                 ExecutionResult.Failed(action.reason, step.id, recoverable = false)
             }
+
+            is ActionPrimitive.SystemAction -> {
+                when (action.name) {
+                    "home" -> {
+                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                        ExecutionResult.Success("Home", 1)
+                    }
+                    "notifications" -> {
+                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                        delay(400)
+                        ExecutionResult.Success("Notifications", 1)
+                    }
+                    "recents" -> {
+                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+                        ExecutionResult.Success("Recents", 1)
+                    }
+                    else -> {
+                        val msg = systemController.execute(action.name, action.params)
+                        if (msg.contains("fail", ignoreCase = true) || msg.contains("needed", ignoreCase = true)) {
+                            speak(msg)
+                        } else if (action.name in setOf("battery", "datetime", "contact_search")) {
+                            speak(msg)
+                        }
+                        ExecutionResult.Success(msg, 1)
+                    }
+                }
+            }
         }
     }
 
     /**
      * Handle user confirmation response.
+     * Resumes execution from the step after the one that requested confirmation.
      */
-    fun handleConfirmation(confirmed: Boolean, plan: ExecutionPlan): ExecutionResult {
+    suspend fun handleConfirmation(confirmed: Boolean, plan: ExecutionPlan): ExecutionResult {
         if (!confirmed) {
             return ExecutionResult.Cancelled("User cancelled")
         }
-        // Continue execution from where we left off
-        return ExecutionResult.Success("Confirmed", currentStepIndex)
+        // Resume from the step AFTER the confirmation step
+        val resumeFrom = currentStepIndex + 1
+        val a11y = getAccessibilityService()
+            ?: return ExecutionResult.Failed("Accessibility service not running", recoverable = true)
+
+        // Re-execute remaining steps synchronously (caller is expected to call from a coroutine)
+        for (i in resumeFrom until plan.steps.size) {
+            currentStepIndex = i
+            val result = executeStep(plan.steps[i], plan, a11y)
+            if (result is ExecutionResult.Failed) return result
+            if (result is ExecutionResult.ClarificationNeeded ||
+                result is ExecutionResult.ConfirmationNeeded) return result
+        }
+        return ExecutionResult.Success("Completed after confirmation", plan.steps.size - resumeFrom)
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -251,7 +298,7 @@ class RobotHand(
         }
     }
 
-    private fun waitForApp(packageName: String, timeoutMs: Long, a11y: AccessibilityService): Boolean {
+    private suspend fun waitForApp(packageName: String, timeoutMs: Long, a11y: AccessibilityService): Boolean {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         while (SystemClock.uptimeMillis() < deadline) {
             val root = a11y.rootInActiveWindow
@@ -259,7 +306,7 @@ class RobotHand(
                 val pkg = try { root.packageName?.toString() ?: "" } catch (e: Exception) { "" }
                 if (pkg.equals(packageName, ignoreCase = true)) return true
             }
-            Thread.sleep(200)
+            delay(200)
         }
         return false
     }
@@ -356,15 +403,20 @@ class RobotHand(
     private fun findAccessibilityNode(a11y: AccessibilityService, target: UiElement): AccessibilityNodeInfo? {
         val root = a11y.rootInActiveWindow ?: return null
         return searchTree(root) { node ->
+            // ponytail: match on any non-null field that the selector specifies.
+            // Old code used && for ALL conditions which was too strict — a node with
+            // matching text but null contentDescription would fail. Now we OR-match
+            // each provided field and skip nulls.
             val text = safeText(node)
             val cd = safeContentDescription(node)
             val hint = safeHint(node)
-            val cls = safeClassName(node)
 
-            (text == target.text || (text != null && text == target.text)) &&
-            (cd == target.contentDescription || (cd != null && cd == target.contentDescription)) &&
-            node.isClickable == target.isClickable &&
-            node.isEditable == target.isEditable
+            var match = true
+            if (target.text != null) match = match && (text != null && text.equals(target.text, ignoreCase = true))
+            if (target.contentDescription != null) match = match && (cd != null && cd.equals(target.contentDescription, ignoreCase = true))
+            if (target.isClickable != null) match = match && (node.isClickable == target.isClickable)
+            if (target.isEditable != null) match = match && (node.isEditable == target.isEditable)
+            match
         }
     }
 
@@ -413,11 +465,7 @@ class RobotHand(
     private fun safeClassName(node: AccessibilityNodeInfo): String = try { node.className?.toString() ?: "" } catch (e: Exception) { "" }
 
     private fun getAccessibilityService(): AccessibilityService? {
-        return try {
-            val cls = Class.forName("com.vdx.VdxAccessibilityService")
-            val field = cls.getDeclaredField("instance")
-            field.isAccessible = true
-            field.get(null) as? AccessibilityService
-        } catch (e: Exception) { null }
+        // Direct static reference — no reflection, ProGuard-safe.
+        return com.vdx.VdxAccessibilityService.instance
     }
 }

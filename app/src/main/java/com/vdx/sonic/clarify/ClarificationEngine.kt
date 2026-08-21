@@ -143,9 +143,15 @@ class ClarificationEngine {
             IntentType.WHATSAPP -> "send a WhatsApp to ${intent.entities["contact"] ?: "someone"}"
             IntentType.SMS -> "send an SMS to ${intent.entities["contact"] ?: "someone"}"
             IntentType.BOOK_RIDE -> "book a ride to ${intent.entities["destination"] ?: "somewhere"}"
-            IntentType.APP_LAUNCH -> "open ${intent.entities["app_name"] ?: "an app"}"
+            IntentType.APP_LAUNCH -> "open ${intent.entities["app_name"] ?: intent.entities["app"] ?: "an app"}"
             IntentType.SEARCH -> "search for ${intent.entities["query"] ?: "something"}"
-            IntentType.YOUTUBE_SEARCH -> "search YouTube for ${intent.entities["query"] ?: "something"}"
+            IntentType.YOUTUBE_SEARCH, IntentType.YOUTUBE_CONTROL ->
+                "YouTube ${intent.entities["query"] ?: intent.entities["action"] ?: ""}"
+            IntentType.EMAIL -> "email ${intent.entities["contact"] ?: ""}"
+            IntentType.PLAY_STORE -> "Play Store ${intent.entities["query"] ?: ""}"
+            IntentType.CONTACT_MANAGE -> "contacts ${intent.entities["contact"] ?: ""}"
+            IntentType.SYSTEM_TOGGLE -> "${intent.entities["state"]} ${intent.entities["target"]}"
+            IntentType.SET_ALARM -> "set an alarm"
             IntentType.READ_SCREEN -> "read the screen"
             IntentType.GO_BACK -> "go back"
             IntentType.GO_HOME -> "go home"
@@ -155,22 +161,25 @@ class ClarificationEngine {
     }
 
     private fun buildConfirmationQuestion(intent: SonicIntent): String {
+        // Keep questions ≤ ~12 words (less chatty than Louie)
         return when (intent.type) {
-            IntentType.CALL -> "Call ${intent.entities["contact"] ?: "that contact"}?"
+            IntentType.CALL -> "Call ${intent.entities["contact"] ?: "them"}?"
             IntentType.WHATSAPP -> {
-                val contact = intent.entities["contact"] ?: "someone"
+                val contact = intent.entities["contact"] ?: "them"
                 val message = intent.entities["message"] ?: ""
-                if (message.isNotBlank()) "Send \"$message\" to $contact on WhatsApp?"
-                else "Open WhatsApp chat for $contact?"
+                if (message.isNotBlank()) {
+                    val short = if (message.length > 40) message.take(37) + "…" else message
+                    "Send to $contact: \"$short\"?"
+                } else "Open WhatsApp for $contact?"
             }
             IntentType.SMS -> {
-                val contact = intent.entities["contact"] ?: "someone"
+                val contact = intent.entities["contact"] ?: "them"
                 val message = intent.entities["message"] ?: ""
-                if (message.isNotBlank()) "Send \"$message\" to $contact?"
+                if (message.isNotBlank()) "Text $contact?"
                 else "Open messages for $contact?"
             }
-            IntentType.BOOK_RIDE -> "Book a ride to ${intent.entities["destination"] ?: "that destination"}?"
-            IntentType.EMAIL -> "Send email to ${intent.entities["contact"] ?: "that contact"}?"
+            IntentType.BOOK_RIDE -> "Book Uber to ${intent.entities["destination"] ?: "there"}?"
+            IntentType.EMAIL -> "Email ${intent.entities["contact"] ?: "them"}?"
             else -> "Proceed?"
         }
     }

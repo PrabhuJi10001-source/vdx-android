@@ -128,13 +128,8 @@ class DiagnosticsEngine(private val context: Context) {
     }
 
     private fun checkServiceRunning(): HealthCheck {
-        // Check via the static flag set by BubbleForegroundService
-        val running = try {
-            val cls = Class.forName("com.vdx.BubbleForegroundService")
-            val field = cls.getDeclaredField("isRunning")
-            field.isAccessible = true
-            field.getBoolean(null)
-        } catch (e: Exception) { false }
+        // Direct static reference — no reflection, ProGuard-safe.
+        val running = com.vdx.BubbleForegroundService.isRunning
 
         return HealthCheck(
             ok = running,
@@ -144,13 +139,8 @@ class DiagnosticsEngine(private val context: Context) {
     }
 
     private fun checkHarnessReady(): HealthCheck {
-        // Check if accessibility service instance is available
-        val ready = try {
-            val cls = Class.forName("com.vdx.VdxAccessibilityService")
-            val field = cls.getDeclaredField("instance")
-            field.isAccessible = true
-            field.get(null) != null
-        } catch (e: Exception) { false }
+        // Direct static reference — no reflection, ProGuard-safe.
+        val ready = com.vdx.VdxAccessibilityService.instance != null
 
         return HealthCheck(
             ok = ready,

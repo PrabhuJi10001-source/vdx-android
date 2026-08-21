@@ -58,15 +58,13 @@ import java.util.Locale
  *   ERROR     → red bubble, shake
  *
  * Interactions:
- *   tap       → start SpeechRecognizer (or text fallback if no mic)
- *   long-press → show keyboard overlay (EditText) for noisy environments
+ *   tap       → start/stop mic → SonicEngine pipeline
+ *   long-press → diagnostics panel (then keyboard fallback option)
  *
- * Intent routing:
- *   1. LlmBridge.extract() → VdxIntent
- *   2. RobotHand.execute() → accessibility-tree navigation inside target apps
- *   3. Fallback to deep-link intents if RobotHand fails
- *   4. Unknown + focused text field → insert text via accessibility
- *   5. Unknown + no text field → TTS "I can: call, whatsapp, uber, read messages, memory"
+ * Intent routing (live path):
+ *   Bubble → VoiceCapture (PCM) → SonicEngine (ASR→Cleanup→Repair→Parse→Plan→Sonic RobotHand)
+ *   Text/keyboard fallback → SonicEngine.processText()
+ *   Legacy RobotHand retained for MainActivity harness tests only
  */
 class BubbleForegroundService : Service() {
 
@@ -89,7 +87,9 @@ class BubbleForegroundService : Service() {
     // ──────────────────────────────────────────────────────────────────────
 
     enum class BubbleState {
-        IDLE, LISTENING, THINKING, EXECUTING, SPEAKING, ERROR
+        IDLE, LISTENING, THINKING, EXECUTING, SPEAKING, ERROR,
+        // Additional states from Sonic pipeline (mapped 1:1, no lossy conversion)
+        CLARIFICATION_REQUIRED, DONE, BLOCKED_PERMISSION
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -122,16 +122,16 @@ class BubbleForegroundService : Service() {
         SonicEngine(this).apply {
             onStateChange = { state ->
                 handler.post {
-                    // Map Sonic states to bubble states
+                    // Direct 1:1 mapping now that service enum has all Sonic states
                     currentState = when (state) {
                         com.vdx.sonic.BubbleState.IDLE -> BubbleState.IDLE
                         com.vdx.sonic.BubbleState.LISTENING -> BubbleState.LISTENING
                         com.vdx.sonic.BubbleState.PROCESSING -> BubbleState.THINKING
-                        com.vdx.sonic.BubbleState.CLARIFICATION_REQUIRED -> BubbleState.IDLE
+                        com.vdx.sonic.BubbleState.CLARIFICATION_REQUIRED -> BubbleState.CLARIFICATION_REQUIRED
                         com.vdx.sonic.BubbleState.EXECUTING -> BubbleState.EXECUTING
-                        com.vdx.sonic.BubbleState.DONE -> BubbleState.SPEAKING
+                        com.vdx.sonic.BubbleState.DONE -> BubbleState.DONE
                         com.vdx.sonic.BubbleState.ERROR -> BubbleState.ERROR
-                        com.vdx.sonic.BubbleState.BLOCKED_PERMISSION -> BubbleState.ERROR
+                        com.vdx.sonic.BubbleState.BLOCKED_PERMISSION -> BubbleState.BLOCKED_PERMISSION
                     }
                 }
             }
@@ -539,6 +539,9 @@ class BubbleForegroundService : Service() {
             BubbleState.EXECUTING -> Color.argb(50, 59, 130, 246)
             BubbleState.SPEAKING  -> Color.argb(50, 59, 130, 246)
             BubbleState.ERROR     -> Color.argb(60, 239, 68, 68)
+            BubbleState.CLARIFICATION_REQUIRED -> Color.argb(50, 245, 158, 11)
+            BubbleState.DONE      -> Color.argb(50, 34, 197, 94)
+            BubbleState.BLOCKED_PERMISSION -> Color.argb(60, 239, 68, 68)
         }
         view.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
@@ -554,6 +557,9 @@ class BubbleForegroundService : Service() {
             BubbleState.EXECUTING -> Color.parseColor("#3b82f6") to Color.parseColor("#2563eb")
             BubbleState.SPEAKING  -> Color.parseColor("#3b82f6") to Color.parseColor("#2563eb")
             BubbleState.ERROR     -> Color.parseColor("#ef4444") to Color.parseColor("#f59e0b")
+            BubbleState.CLARIFICATION_REQUIRED -> Color.parseColor("#f59e0b") to Color.parseColor("#d97706")
+            BubbleState.DONE      -> Color.parseColor("#22c55e") to Color.parseColor("#16a34a")
+            BubbleState.BLOCKED_PERMISSION -> Color.parseColor("#ef4444") to Color.parseColor("#dc2626")
         }
     }
 
@@ -579,7 +585,7 @@ class BubbleForegroundService : Service() {
 
         // Progress bar visibility
         when (currentState) {
-            BubbleState.THINKING -> {
+            BubbleState.THINKING, BubbleState.CLARIFICATION_REQUIRED -> {
                 progress.isIndeterminate = true
                 progress.visibility = View.VISIBLE
             }
@@ -601,6 +607,9 @@ class BubbleForegroundService : Service() {
             BubbleState.THINKING -> startThinkingSpin()    // (b) spinning progress indicator
             BubbleState.SPEAKING -> startSpeakingPulse()   // (d) blue + slow pulse
             BubbleState.ERROR -> shakeBubble(container)    // (e) red + shake
+            BubbleState.CLARIFICATION_REQUIRED -> startThinkingSpin() // amber, same as thinking
+            BubbleState.DONE -> { /* brief green flash, handled by onResult callback */ }
+            BubbleState.BLOCKED_PERMISSION -> shakeBubble(container)  // red shake
             BubbleState.EXECUTING -> { /* progress bar + text overlay handle visuals */ }
         }
     }
@@ -684,9 +693,11 @@ class BubbleForegroundService : Service() {
     }
 
     private fun stopPulse() {
+        // Remove any pending runnable before clearing animation
+        pulseRunnable?.let { handler.removeCallbacks(it) }
+        pulseRunnable = null
         bubbleContainer?.clearAnimation()
         bubbleIcon?.clearAnimation()
-        pulseRunnable = null
     }
 
     /** ISSUE 4(e): ERROR — shake briefly (red color from stateColors) */
@@ -767,13 +778,8 @@ class BubbleForegroundService : Service() {
     private fun onTap() {
         Log.d(TAG, "onTap: isListening=$isListening")
         if (!isListening) {
-            // Start listening
-            isListening = true
-            currentState = BubbleState.LISTENING
-            showTopToast("🎤 Listening...")
             startVoiceCapture()
         } else {
-            // Stop listening and process
             isListening = false
             currentState = BubbleState.THINKING
             stopVoiceCaptureAndProcess()
@@ -781,136 +787,109 @@ class BubbleForegroundService : Service() {
     }
 
     private fun onLongPress() {
-        Log.d(TAG, "onLongPress: showing text input overlay")
+        Log.d(TAG, "onLongPress: showing diagnostics")
         if (isListening) {
-            Log.d(TAG, "onLongPress: stopping VoiceCaptureManager (was listening)")
             voiceCaptureManager?.stopCapture()
             isListening = false
         }
-        showTextInputOverlay()
+        showDiagnosticsOverlay()
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Voice Capture (AudioRecord + VAD + Cloud STT)
+    // Voice Capture → SonicEngine (single live path)
     // ──────────────────────────────────────────────────────────────────────
 
     private fun startVoiceCapture() {
-        Log.d(TAG, "startVoiceCapture: initializing VoiceCaptureManager")
+        Log.d(TAG, "startVoiceCapture: initializing capture-only VoiceCaptureManager")
         if (isListening) {
             Log.w(TAG, "startVoiceCapture: already listening, ignoring")
             return
         }
         isListening = true
         currentState = BubbleState.LISTENING
-        showTopToast("🎤 Listening...")
+        showTopToast("🎤 Listening... tap again when done")
 
-        // Create VoiceCaptureManager with callback
-        voiceCaptureManager = VoiceCaptureManager(this, object : VoiceCaptureManager.Callback {
-            override fun onSpeechStart() {
-                Log.d(TAG, "VCM onSpeechStart: speech detected")
-                handler.post {
-                    if (currentState == BubbleState.LISTENING) {
-                        Log.d(TAG, "VCM onSpeechStart: bubble already in LISTENING state")
+        voiceCaptureManager = VoiceCaptureManager(
+            this,
+            object : VoiceCaptureManager.Callback {
+                override fun onSpeechStart() {
+                    Log.d(TAG, "VCM onSpeechStart")
+                }
+
+                override fun onSpeechEnd(audioData: ShortArray) {
+                    Log.d(TAG, "VCM onSpeechEnd (VAD): ${audioData.size} samples")
+                    handler.post {
+                        // Auto end-of-speech: only process if still in listening (user didn't tap stop)
+                        if (isListening && currentState == BubbleState.LISTENING) {
+                            isListening = false
+                            currentState = BubbleState.THINKING
+                            feedSonic(audioData)
+                        }
                     }
                 }
-            }
 
-            override fun onSpeechEnd(audioData: ShortArray) {
-                Log.d(TAG, "VCM onSpeechEnd: ${audioData.size} samples captured")
-                handler.post {
-                    isListening = false
-                    currentState = BubbleState.THINKING
+                override fun onTranscript(text: String) {
+                    // Unused on Sonic path (processWithLlm=false)
+                    Log.d(TAG, "VCM onTranscript (ignored on Sonic path): $text")
                 }
-            }
 
-            override fun onTranscript(text: String) {
-                Log.d(TAG, "VCM onTranscript: transcript=\"$text\"")
-                handler.post {
-                    if (text.isBlank()) {
-                        // No STT API key configured — fallback to keyboard
-                        Log.d(TAG, "VCM onTranscript: no transcript (no API key), showing keyboard fallback")
-                        speak("No STT API configured. Say your command or use keyboard.")
-                        currentState = BubbleState.IDLE
+                override fun onError(message: String) {
+                    Log.e(TAG, "VCM onError: $message")
+                    handler.post {
+                        isListening = false
+                        currentState = BubbleState.ERROR
+                        speak(message)
                         handler.postDelayed({
+                            currentState = BubbleState.IDLE
                             showTextInputOverlay()
-                        }, 1000)
-                    } else {
-                        // We got a transcript — process it
-                        showTopToast("Heard: $text")
-                        Log.d(TAG, "Awareness: Heard \"$text\"")
-                        handleIntent(text)
+                        }, 800)
                     }
                 }
-            }
 
-            override fun onError(message: String) {
-                Log.e(TAG, "VCM onError: $message")
-                handler.post {
-                    isListening = false
-                    currentState = BubbleState.ERROR
-                    speak(message)
-                    handler.postDelayed({
-                        currentState = BubbleState.IDLE
-                        Log.d(TAG, "VCM onError: showing keyboard fallback")
-                        showTextInputOverlay()
-                    }, 800)
-                }
-            }
-
-            override fun onAudioLevel(rmsdB: Float) {
-                // Update bubble pulse intensity based on audio level
-                // Map -60..0 dB to scale multiplier 1.0..1.4
-                val normalized = ((rmsdB + 60f) / 60f).coerceIn(0f, 1f)
-                val scaleBoost = normalized * 0.4f
-                handler.post {
-                    val container = bubbleContainer ?: return@post
-                    // Only adjust if in LISTENING state
-                    if (currentState == BubbleState.LISTENING) {
-                        val scale = 1f + scaleBoost
-                        container.scaleX = scale
-                        container.scaleY = scale
+                override fun onAudioLevel(rmsdB: Float) {
+                    val normalized = ((rmsdB + 60f) / 60f).coerceIn(0f, 1f)
+                    val scaleBoost = normalized * 0.4f
+                    handler.post {
+                        val container = bubbleContainer ?: return@post
+                        if (currentState == BubbleState.LISTENING) {
+                            val scale = 1f + scaleBoost
+                            container.scaleX = scale
+                            container.scaleY = scale
+                        }
                     }
                 }
-            }
 
-            override fun onIntent(intent: VdxIntent) {
-                Log.d(TAG, "VCM onIntent: $intent")
-                handler.post {
-                    handleIntentFromVoice(intent)
+                override fun onIntent(intent: VdxIntent) {
+                    // Unused on Sonic path
+                    Log.d(TAG, "VCM onIntent ignored on Sonic path: $intent")
                 }
-            }
-        })
+            },
+            processWithLlm = false
+        )
 
-        Log.d(TAG, "startVoiceCapture: calling startCapture()")
         voiceCaptureManager?.startCapture()
-        Log.d(TAG, "startVoiceCapture: VoiceCaptureManager.startCapture called")
     }
 
     /**
-     * Stop voice capture and hand audio to SonicEngine for processing.
-     * Uses FreeFlow's timeout racing pattern: race ASR against a timeout.
+     * Stop capture and hand PCM to SonicEngine.
      */
     private fun stopVoiceCaptureAndProcess() {
-        Log.d(TAG, "stopVoiceCaptureAndProcess: stopping capture")
+        Log.d(TAG, "stopVoiceCaptureAndProcess")
         val captureManager = voiceCaptureManager
         if (captureManager == null) {
-            Log.w(TAG, "stopVoiceCaptureAndProcess: no capture manager")
             currentState = BubbleState.IDLE
             return
         }
-
-        // Get captured audio data from the manager
-        // The VoiceCaptureManager stores the last captured audio
         captureManager.stopCapture()
+        val audio = captureManager.consumeCapturedAudio()
+        feedSonic(audio)
+    }
 
-        // Build capture session metadata
+    private fun feedSonic(audioData: ShortArray) {
         val a11y = VdxAccessibilityService.instance
-        val screenModel = if (a11y != null) {
-            sonicEngine.harness.readScreen(a11y)
-        } else null
-
+        val screenModel = if (a11y != null) sonicEngine.harness.readScreen(a11y) else null
         val captureSession = CaptureSession(
-            audioData = ShortArray(0), // Will be populated by VoiceCaptureManager
+            audioData = audioData,
             timestamp = System.currentTimeMillis(),
             foregroundPackage = screenModel?.packageName,
             focusedFieldState = if (screenModel?.isEditableFieldFocused == true) {
@@ -923,9 +902,35 @@ class BubbleForegroundService : Service() {
             } else null,
             uiSnapshot = screenModel
         )
-
-        // Process via SonicEngine
         sonicEngine.process(captureSession)
+    }
+
+    private fun showDiagnosticsOverlay() {
+        textOverlay?.let { windowManager?.removeView(it) }
+        currentState = BubbleState.BLOCKED_PERMISSION
+        val report = sonicEngine.diagnostics.checkAll()
+        val blockers = sonicEngine.diagnostics.getBlockers()
+        val summary = buildString {
+            append("Diagnostics\n")
+            append(if (report.microphone.ok) "✅ Mic\n" else "❌ Mic\n")
+            append(if (report.overlay.ok) "✅ Overlay\n" else "❌ Overlay\n")
+            append(if (report.accessibility.ok) "✅ Accessibility\n" else "❌ Accessibility\n")
+            append(if (report.batteryOptimization.ok) "✅ Battery\n" else "⚠️ Battery\n")
+            append(if (report.serviceRunning.ok) "✅ Service\n" else "❌ Service\n")
+            append(if (report.harnessReady.ok) "✅ Harness\n" else "❌ Harness\n")
+            append(if (report.networkAvailable.ok) "✅ Network\n" else "❌ Network\n")
+            if (blockers.isNotEmpty()) {
+                append("\nBlocked: ${blockers.joinToString("; ")}")
+            }
+        }
+        speak(if (blockers.isEmpty()) "All systems ready." else blockers.first())
+        showTopToast(summary.replace("\n", " · "))
+
+        // Offer keyboard fallback after diagnostics
+        handler.postDelayed({
+            currentState = BubbleState.IDLE
+            showTextInputOverlay()
+        }, 1500)
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -1013,11 +1018,15 @@ class BubbleForegroundService : Service() {
             removeTextOverlay()
             if (text.isNotBlank()) {
                 Log.d(TAG, "text input submitted: \"$text\"")
-                // ISSUE 3(a): Show what was heard (typed)
                 showTopToast("Heard: $text")
-                Log.d(TAG, "Awareness: Heard \"$text\"")
                 currentState = BubbleState.THINKING
-                handleIntent(text)
+                val pending = pendingClarification
+                if (pending != null) {
+                    pendingClarification = null
+                    sonicEngine.handleClarificationResponse(pending, text)
+                } else {
+                    sonicEngine.processText(text)
+                }
             } else {
                 currentState = BubbleState.IDLE
             }

@@ -107,29 +107,42 @@ Output hygiene:
         }
 
         try {
-            val result = when (provider) {
-                "ollama" -> callOllama(transcript, context)
-                "groq" -> callGroq(transcript, context)
-                "openai" -> callOpenAI(transcript, context)
-                else -> callOllama(transcript, context)
+            // Always run local Wispr-style cleanup first (offline, instant)
+            val local = LocalCleanupEngine.clean(transcript)
+            val base = if (local.isNotBlank()) local else transcript
+
+            val llmCleaned = try {
+                when (provider) {
+                    "ollama" -> callOllama(base, context)
+                    "groq" -> callGroq(base, context)
+                    "openai" -> callOpenAI(base, context)
+                    "local", "none" -> null
+                    else -> callOllama(base, context)
+                }
+            } catch (_: Exception) {
+                null
             }
 
-            val cleaned = sanitizeOutput(result)
-            val confidence = if (cleaned.isNotBlank() && cleaned != transcript) 0.9f else 1.0f
+            val cleaned = if (!llmCleaned.isNullOrBlank()) sanitizeOutput(llmCleaned) else base
+            val confidence = when {
+                cleaned.isBlank() -> 0.5f
+                llmCleaned != null && cleaned != transcript -> 0.95f
+                cleaned != transcript -> 0.9f
+                else -> 1.0f
+            }
 
             CleanupResult(
                 cleanedText = cleaned,
                 originalText = transcript,
                 confidence = confidence,
-                provider = provider
+                provider = if (llmCleaned != null) provider else "local"
             )
         } catch (e: Exception) {
-            // If cleanup fails, return original transcript
             CleanupResult(
-                cleanedText = transcript,
+                cleanedText = LocalCleanupEngine.clean(transcript).ifBlank { transcript },
                 originalText = transcript,
-                confidence = 0.5f,
-                provider = "fallback"
+                confidence = 0.7f,
+                provider = "local"
             )
         }
     }

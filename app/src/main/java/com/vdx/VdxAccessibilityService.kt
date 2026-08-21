@@ -35,6 +35,10 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         private const val MAX_WALKER_DEPTH = 3
         private const val MAX_WALKER_NODES = 50
 
+        // Bounded traverse for screen reading (slightly deeper than walker)
+        private const val MAX_TRAVERSE_DEPTH = 5
+        private const val MAX_TRAVERSE_NODES = 100
+
         /**
          * Live reference to the running service instance, or null when the service
          * is not connected.  [BubbleForegroundService] uses this to invoke methods.
@@ -134,12 +138,17 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
 
     /**
      * Recursively walk the accessibility tree, collecting visible nodes.
+     * Bounded to prevent ANR on complex screens (same limits as extractWisprOverlayText).
      */
     private fun traverseTree(
         node: AccessibilityNodeInfo,
         elements: MutableList<ScreenElement>,
-        textFields: MutableList<ScreenElement>
+        textFields: MutableList<ScreenElement>,
+        depth: Int = 0,
+        visitedCount: AtomicInteger = AtomicInteger(0)
     ) {
+        if (depth > MAX_TRAVERSE_DEPTH || visitedCount.incrementAndGet() > MAX_TRAVERSE_NODES) return
+
         val text = nodeText(node)
         val isEditable = isEditableNode(node)
         val isClickable = node.isClickable
@@ -161,7 +170,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            traverseTree(child, elements, textFields)
+            traverseTree(child, elements, textFields, depth + 1, visitedCount)
         }
     }
 

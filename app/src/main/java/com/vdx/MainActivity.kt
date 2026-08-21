@@ -45,6 +45,10 @@ class MainActivity : AppCompatActivity() {
     // Structured logger for harness sessions
     private var harnessLogger: SessionLogger? = null
 
+    // ponytail: single SessionMemory instance — old code created a new one each time,
+    // always returning 0 items.
+    private val sessionMemory = SessionMemory()
+
     private val audioPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> updateStatus() }
@@ -296,7 +300,7 @@ class MainActivity : AppCompatActivity() {
                     "Uber not available, opened maps"
                 }
             }
-            is VdxIntent.Memory -> "Session memory: ${SessionMemory().getAll().size} items"
+            is VdxIntent.Memory -> "Session memory: ${sessionMemory.getAll().size} items"
             is VdxIntent.YouTube -> "Searching YouTube for ${result.searchQuery}"
             is VdxIntent.Sms -> "Opening messages for ${result.contact}"
             is VdxIntent.Email -> "Opening email for ${result.contact}"
