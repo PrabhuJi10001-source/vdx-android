@@ -5,7 +5,7 @@ import com.vdx.sonic.IntentType
 import com.vdx.sonic.SonicIntent
 
 /**
- * IntentParser — Louie-parity natural language → SonicIntent (Wispr sessions).
+ * IntentParser — V1-capability natural language → SonicIntent (voice sessions).
  */
 class IntentParser {
 
@@ -13,6 +13,12 @@ class IntentParser {
         private const val HIGH = 0.95f
         private const val MED = 0.82f
         private const val LOW = 0.6f
+
+        // Voice-flow abort phrases (voice-flow abort). A pure cancel
+        // utterance ("stop", "never mind", "dismiss", "cancel") aborts the in-flight
+        // command before any action runs. Bare "stop" is matched separately in
+        // parseRegex so a command-word "stop X" still parses normally.
+        val CANCEL_PHRASES = setOf("cancel", "never mind", "nevermind", "dismiss")
     }
 
     fun parse(cleanedText: String, useLlm: Boolean = false): SonicIntent {
@@ -46,6 +52,19 @@ class IntentParser {
 
     private fun parseRegex(text: String): SonicIntent? {
         val t = text.lowercase().trim()
+
+        // CANCEL — first-class voice-flow abort (voice-flow abort).
+        // A pure abort utterance cancels the in-flight command/plan before any action
+        // runs, instead of being swallowed as a substring of a longer command. Guarded
+        // so a longer "cancel my Uber ride" still routes to BOOK_RIDE, not an abort.
+        if (t in CANCEL_PHRASES) {
+            return SonicIntent(IntentMode.COMMAND, IntentType.CANCEL, rawText = text, confidence = HIGH)
+        }
+        // "stop" alone is ambiguous vs "stop reading"/"stop listening" → treat bare
+        // "stop" as an abort; command-word "stop X" flows through normal parsing.
+        if (t == "stop") {
+            return SonicIntent(IntentMode.COMMAND, IntentType.CANCEL, rawText = text, confidence = HIGH)
+        }
 
         // System toggles / queries first (specific)
         Regex("""(?:turn|switch)\s+(on|off)\s+(wifi|wi-?fi|bluetooth|mobile data|flashlight|torch)""").find(t)?.let { m ->
@@ -91,7 +110,16 @@ class IntentParser {
             )
         }
 
-        // CALL
+        // CALL — but "call X on WhatsApp" is a WhatsApp VOICE call, not a phone
+        // call to a contact named "Mom on WhatsApp". Must run BEFORE the generic
+        // call regex, which would otherwise swallow the whole "mom on whatsapp"
+        // as a single contact name (misrouted → confirmation dead-end).
+        Regex("""(?:please\s+)?(?:call|phone|ring|dial)\s+(?:on\s+|via\s+)?whats?app\s+(.+)$""").find(t)?.let { m ->
+            return wa(text, title(m.groupValues[1]), "", "call")
+        }
+        Regex("""(?:please\s+)?(?:call|phone|ring|dial)\s+(.+?)\s+on\s+whats?app$""").find(t)?.let { m ->
+            return wa(text, title(m.groupValues[1]), "", "call")
+        }
         Regex("""^(?:please\s+)?(?:call|phone|ring|dial)\s+(.+)$""").find(t)?.let { m ->
             return SonicIntent(
                 IntentMode.COMMAND, IntentType.CALL, rawText = text, confidence = HIGH,
@@ -154,7 +182,23 @@ class IntentParser {
         ).find(t)?.let { m ->
             return wa(text, title(m.groupValues[1]), m.groupValues.getOrNull(2).orEmpty(), "send")
         }
-        // "WhatsApp Ravi saying …" / "WhatsApp to Ravi that …"
+        // "send WhatsApp to Ravi [saying …]" / "send it on WhatsApp to mom"
+        // Natural spoken form (Cody): "send whatsapp to mom", "send it on whatsapp to dad".
+        // Contact = first token after "to" (single word, most common); if a
+        // delimiter (saying/that/message/to say/:/then) is present, everything
+        // after it is the message; otherwise the rest of the phrase is the message.
+        Regex(
+            """(?:send|start)\s+(?:it\s+)?(?:on\s+)?whats?app\s+(?:to\s+)?(\w+)(?:\s+(?:saying|that|message|to say|:)\s+(.+))?(?:.*)$"""
+        ).find(t)?.let { m ->
+            val contact = m.groupValues[1].trim()
+            val message = if (m.groupValues.getOrNull(2).isNullOrBlank()) {
+                // No explicit delimiter → remainder after the contact is the message.
+                val after = t.replaceFirst(Regex("""(?:send|start)\s+(?:it\s+)?(?:on\s+)?whats?app\s+(?:to\s+)?\w+"""), "").trim()
+                after.removePrefix(",").trim()
+            } else m.groupValues[2].trim()
+            return wa(text, title(contact), message, "send")
+        }
+        // "whatsapp Ravi saying …" / "whatsapp to Ravi that …"
         Regex(
             """whats\s?app\s+(?:to\s+)?(.+?)(?:\s+(?:saying|that|message|:)\s+(.+))?$"""
         ).find(t)?.let { m ->
@@ -317,9 +361,16 @@ class IntentParser {
             return SonicIntent(IntentMode.READ, IntentType.DESCRIBE_IMAGE, rawText = text, confidence = MED)
         }
 
-        // OPEN APP
+        // OPEN APP — settings sections are not apps
         Regex("""^(?:please\s+)?(?:open|launch|start|switch to)\s+(.+)$""").find(t)?.let { m ->
             var app = m.groupValues[1].trim().replace(Regex("""\s+and\s+.*$"""), "")
+            if (app.endsWith(" settings") || app == "settings") {
+                val section = app.removeSuffix(" settings").trim().ifBlank { "settings" }
+                return SonicIntent(
+                    IntentMode.NAVIGATION, IntentType.SETTINGS_NAVIGATION, rawText = text, confidence = HIGH,
+                    entities = mapOf("section" to section)
+                )
+            }
             return SonicIntent(
                 IntentMode.COMMAND, IntentType.APP_LAUNCH, rawText = text, confidence = HIGH,
                 entities = mapOf("app" to app, "app_name" to app)
@@ -390,6 +441,16 @@ class IntentParser {
             return SonicIntent(
                 IntentMode.COMMAND, IntentType.MEMORY_STORE, rawText = text, confidence = HIGH,
                 entities = mapOf("value" to m.groupValues[1].trim())
+            )
+        }
+
+        // DRAFT_NOTE — safe action: prepare & save a project note / draft. Requires confirmation.
+        // Body may be introduced by about/on/for/that/: or be the trailing text after "note".
+        Regex("""(?:draft|write|save)\s+(?:a\s+)?(?:project\s+)?note(?:\s+(?:about|on|for|that|:)\s+(.+))?$""").find(t)?.let { m ->
+            return SonicIntent(
+                mode = IntentMode.COMMAND, type = IntentType.DRAFT_NOTE, rawText = text, confidence = HIGH,
+                entities = mapOf("body" to m.groupValues.getOrNull(1).orEmpty().trim()),
+                requiresConfirmation = true
             )
         }
 

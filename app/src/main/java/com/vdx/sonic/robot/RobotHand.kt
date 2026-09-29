@@ -11,7 +11,11 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.vdx.sonic.*
+import com.vdx.settings.Verbosity
+import com.vdx.settings.VerbosityFilter
 import com.vdx.sonic.harness.Harness
+import com.vdx.telemetry.Telemetry
+import com.vdx.telemetry.TelemetryEventTypes
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -35,6 +39,11 @@ class RobotHand(
         private const val TAG = "Sonic-RobotHand"
         private const val STEP_DELAY_MS = 500L
         private const val DEFAULT_TIMEOUT_MS = 8000L
+
+        // GAP 2: bounded recovery — max recovery attempts after the initial try,
+        // with a short coroutine delay between attempts (never Thread.sleep).
+        private const val MAX_RECOVERY_ATTEMPTS = 2
+        private const val RECOVERY_DELAY_MS = 350L
     }
 
     private var tts: TextToSpeech? = null
@@ -42,14 +51,49 @@ class RobotHand(
     private val systemController by lazy { com.vdx.sonic.system.SystemController(context) }
 
     /**
-     * Execute a full execution plan step by step.
+     * Execute a full execution plan step by step. Wraps the worker to record
+     * essential telemetry: the parsed intent and the honest execution outcome
+     * (success / fail / unverified) with duration. Coarse enum labels only —
+     * never the transcript or any content.
      */
     suspend fun execute(plan: ExecutionPlan): ExecutionResult {
+        val startMs = SystemClock.elapsedRealtime()
+        Telemetry.log(
+            TelemetryEventTypes.INTENT_PARSED,
+            mapOf("type" to TelemetrySanitizerLabel(plan.intent))
+        )
+        val result = executeInternal(plan)
+        val durationMs = SystemClock.elapsedRealtime() - startMs
+        Telemetry.log(
+            TelemetryEventTypes.EXECUTION_RESULT,
+            mapOf(
+                "intent_type" to TelemetrySanitizerLabel(plan.intent),
+                "status" to statusOf(result),
+                "duration_ms" to durationMs
+            )
+        )
+        return result
+    }
+
+    private fun TelemetrySanitizerLabel(intent: com.vdx.sonic.SonicIntent): String =
+        com.vdx.telemetry.TelemetrySanitizer.safeIntentLabel(intent.type.name) ?: "UNKNOWN"
+
+    /** Map a result to the coarse execution status enum. */
+    private fun statusOf(result: ExecutionResult): String = when (result) {
+        is ExecutionResult.Success -> "success"
+        is ExecutionResult.Unverified -> "unverified"
+        is ExecutionResult.Failed, is ExecutionResult.Blocked, is ExecutionResult.Cancelled -> "fail"
+        else -> "fail" // ClarificationNeeded / ConfirmationNeeded are not completed executions
+    }
+
+    private suspend fun executeInternal(plan: ExecutionPlan): ExecutionResult {
         currentStepIndex = 0
+        // a11y is OPTIONAL at the plan level. Opening an app uses the launcher
+        // intent resolver (getLaunchIntentForPackage) exactly like the OS /
+        // Gemini does — it needs NO accessibility. Only a11y-dependent steps
+        // (click, set-text, read) require the service; those degrade to
+        // Unverified (non-blocking) below instead of aborting the whole plan.
         val a11y = getAccessibilityService()
-        if (a11y == null) {
-            return ExecutionResult.Failed("Accessibility service not running", recoverable = true)
-        }
 
         initTts()
 
@@ -57,9 +101,21 @@ class RobotHand(
             currentStepIndex = i
             Log.d(TAG, "Step ${i + 1}/${plan.steps.size}: ${step.description}")
 
+            // STEP-BY-STEP band (7-8): announce what we're about to do as it executes.
+            announceStep(step.description)
+
             val result = executeStep(step, plan, a11y)
             if (result is ExecutionResult.Failed) {
-                return result
+                // Failure cascade (failure cascade): a failed step
+                // blocks all downstream steps. For a linear plan, downstream = every
+                // step after the failed one. Return Blocked so the caller knows the
+                // plan stopped cleanly instead of each dependent re-failing.
+                val blockedIds = plan.steps.drop(i + 1).map { it.id }
+                return ExecutionResult.Blocked(
+                    reason = result.reason,
+                    failedStep = result.step ?: step.id,
+                    blockedStepIds = blockedIds
+                )
             }
             if (result is ExecutionResult.ClarificationNeeded ||
                 result is ExecutionResult.ConfirmationNeeded) {
@@ -78,12 +134,58 @@ class RobotHand(
     /**
      * Execute a single action step.
      */
-    private suspend fun executeStep(step: ActionStep, plan: ExecutionPlan, a11y: AccessibilityService): ExecutionResult {
+    private suspend fun executeStep(step: ActionStep, plan: ExecutionPlan, a11y: AccessibilityService?): ExecutionResult {
+        // a11y-dependent primitives (click, set-text, read, gesture, global
+        // actions, scroll, select, focus, find/wait-for node) need the service.
+        // If it is not bound, degrade to Unverified (non-blocking) so app-open
+        // still works and we never crash on a null service. App launch itself is
+        // handled in its own branch below and does NOT hit this guard.
+        val needsA11y = when (step.action) {
+            is ActionPrimitive.OpenApp, is ActionPrimitive.WaitForPackage,
+            is ActionPrimitive.AskUser, is ActionPrimitive.WaitForUserConfirmation,
+            is ActionPrimitive.FailWithReason, is ActionPrimitive.SystemAction -> false
+            else -> true
+        }
+        if (needsA11y && a11y == null) {
+            return ExecutionResult.Unverified(
+                message = step.description,
+                reason = "accessibility service not bound — app launch unaffected",
+                step = step.id
+            )
+        }
         return when (val action = step.action) {
             is ActionPrimitive.OpenApp -> {
+                if (com.vdx.sonic.executor.PaymentBlocklist.blockedPackage(action.packageName)) {
+                    return ExecutionResult.Failed(
+                        com.vdx.sonic.executor.PaymentBlocklist.REASON,
+                        step.id,
+                        recoverable = false
+                    )
+                }
                 val ok = launchApp(action.packageName)
-                if (!ok) ExecutionResult.Failed("Could not open ${action.packageName}", step.id, recoverable = true)
-                else ExecutionResult.Success("Opened ${action.packageName}", 1)
+                if (!ok) {
+                    ExecutionResult.Failed("Could not open ${action.packageName}", step.id, recoverable = true)
+                } else {
+                    // VERIFICATION GATE: verify the app is actually in foreground,
+                    // not just that startActivity() didn't throw. Uses a11y if bound,
+                    // else UsageStatsManager (no permission needed to read foreground),
+                    // so app launch works even without accessibility — same as Gemini.
+                    val fg = foregroundPackage(a11y)
+                    when {
+                        fg == null -> ExecutionResult.Unverified(
+                            message = "Opened ${action.packageName}",
+                            reason = "cannot read foreground — accessibility + usage-stats both unavailable",
+                            step = step.id
+                        )
+                        fg.equals(action.packageName, ignoreCase = true) ->
+                            ExecutionResult.Success("Opened ${action.packageName} — verified foreground", 1)
+                        else -> ExecutionResult.Unverified(
+                            message = "Opened ${action.packageName}",
+                            reason = "foreground is $fg, expected ${action.packageName} — app may have crashed or not loaded yet",
+                            step = step.id
+                        )
+                    }
+                }
             }
 
             is ActionPrimitive.WaitForPackage -> {
@@ -91,7 +193,6 @@ class RobotHand(
                 if (!ok) ExecutionResult.Failed("${action.packageName} did not load in time", step.id, recoverable = true)
                 else ExecutionResult.Success("${action.packageName} loaded", 1)
             }
-
             is ActionPrimitive.ReadUiState -> {
                 val screen = harness.readScreen(a11y)
                 ExecutionResult.Success("Read screen: ${screen.packageName}, ${screen.elements.size} elements", 1)
@@ -102,6 +203,13 @@ class RobotHand(
                 val node = findNode(screen, action.selector)
                 if (node == null) ExecutionResult.Failed("Could not find element matching selector", step.id, recoverable = true)
                 else ExecutionResult.Success("Found element: ${node.text ?: node.contentDescription ?: node.ref}", 1)
+            }
+
+            is ActionPrimitive.WaitForNode -> {
+                val node = harness.waitForNode(a11y, action.selector, action.timeoutMs)
+                if (node == null) ExecutionResult.Failed(
+                    "Timed out waiting for element matching selector", step.id, recoverable = true)
+                else ExecutionResult.Success("Element appeared: ${node.text ?: node.contentDescription ?: node.ref}", 1)
             }
 
             is ActionPrimitive.FocusNode -> {
@@ -121,19 +229,47 @@ class RobotHand(
                 val a11yNode = findAccessibilityNode(a11y, node)
                 if (a11yNode == null) return ExecutionResult.Failed("Text field not found in tree", step.id, recoverable = true)
                 val ok = insertText(a11yNode, action.text)
-                if (!ok) ExecutionResult.Failed("Could not insert text", step.id, recoverable = true)
-                else ExecutionResult.Success("Inserted text: ${action.text.take(50)}", 1)
+                if (!ok) {
+                    ExecutionResult.Failed("Could not insert text", step.id, recoverable = true)
+                } else {
+                    // VERIFICATION GATE: re-read the field and verify the text
+                    // is actually present. ACTION_SET_TEXT can return true but
+                    // the field may have rejected the input (input filters,
+                    // maxLength, etc.).
+                    delay(200) // brief delay for UI to settle
+                    val verifyScreen = harness.refresh(a11y)
+                    val verifyNode = findNode(verifyScreen, action.selector)
+                    if (verifyNode != null && verifyNode.text?.contains(action.text) == true) {
+                        ExecutionResult.Success("Inserted text: ${action.text.take(50)} — verified in field", 1)
+                    } else {
+                        ExecutionResult.Unverified(
+                            message = "Inserted text: ${action.text.take(50)}",
+                            reason = "text field does not contain expected text — input may have been rejected",
+                            step = step.id
+                        )
+                    }
+                }
             }
 
             is ActionPrimitive.ClickNode -> {
-                val screen = harness.readScreen(a11y)
-                val node = findNode(screen, action.selector)
-                if (node == null) return ExecutionResult.Failed("Could not find element to click", step.id, recoverable = true)
-                val a11yNode = findAccessibilityNode(a11y, node)
-                if (a11yNode == null) return ExecutionResult.Failed("Clickable element not found in tree", step.id, recoverable = true)
-                val ok = clickNode(a11yNode, a11y)
-                if (!ok) ExecutionResult.Failed("Could not click element", step.id, recoverable = true)
-                else ExecutionResult.Success("Clicked element", 1)
+                // GAP 2: bounded retry-with-fallback. If the first click fails
+                // (e.g. it missed its target), re-read the screen and re-attempt up to
+                // MAX_RECOVERY_ATTEMPTS more times, each separated by a short delay.
+                // The click ladder (ACTION_CLICK → clickable parent → gesture tap)
+                // runs on every attempt. Only a hard, repeated failure is returned.
+                val result = retryWithRecovery("click", step.id) {
+                    val screen = harness.readScreen(a11y)
+                    val node = findNode(screen, action.selector)
+                    if (node == null) return@retryWithRecovery ExecutionResult.Failed(
+                        "Could not find element to click", step.id, recoverable = true)
+                    val a11yNode = findAccessibilityNode(a11y, node)
+                    if (a11yNode == null) return@retryWithRecovery ExecutionResult.Failed(
+                        "Clickable element not found in tree", step.id, recoverable = true)
+                    val ok = clickNode(a11yNode, a11y)
+                    if (ok) ExecutionResult.Success("Clicked element", 1)
+                    else ExecutionResult.Failed("Could not click element", step.id, recoverable = true)
+                }
+                result
             }
 
             is ActionPrimitive.LongClickNode -> {
@@ -179,19 +315,19 @@ class RobotHand(
                     .distinct()
                     .take(6)
                     .joinToString(". ")
-                // Quiet UX: speak a short summary, not the whole tree (beats Louie chatter)
-                if (text.isNotBlank()) speak(text.take(160))
+                // Quiet UX: speak a short summary, not the whole tree (less chatter)
+                if (text.isNotBlank()) speak(text.take(160), Verbosity.MIN_STANDARD)
                 ExecutionResult.Success(text.ifBlank { "Screen read" }, 1)
             }
 
             is ActionPrimitive.AskUser -> {
                 // One short question only
-                speak(action.question)
+                speak(action.question, Verbosity.MIN_CONFIRM)
                 ExecutionResult.ClarificationNeeded(action.question, plan.intent)
             }
 
             is ActionPrimitive.WaitForUserConfirmation -> {
-                speak(action.prompt)
+                speak(action.prompt, Verbosity.MIN_CONFIRM)
                 ExecutionResult.ConfirmationNeeded(action.prompt, plan)
             }
 
@@ -202,8 +338,8 @@ class RobotHand(
             }
 
             is ActionPrimitive.GoBack -> {
-                a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                ExecutionResult.Success("Went back", 1)
+                if (a11y == null) ExecutionResult.Unverified("Go back", "accessibility not bound", step.id)
+                else { a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK); ExecutionResult.Success("Went back", 1) }
             }
 
             is ActionPrimitive.FailWithReason -> {
@@ -213,30 +349,57 @@ class RobotHand(
             is ActionPrimitive.SystemAction -> {
                 when (action.name) {
                     "home" -> {
-                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-                        ExecutionResult.Success("Home", 1)
+                        if (a11y == null) ExecutionResult.Unverified("Home", "accessibility not bound", step.id)
+                        else { a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME); ExecutionResult.Success("Home", 1) }
                     }
                     "notifications" -> {
-                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                        delay(400)
-                        ExecutionResult.Success("Notifications", 1)
+                        if (a11y == null) ExecutionResult.Unverified("Notifications", "accessibility not bound", step.id)
+                        else { a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS); delay(400); ExecutionResult.Success("Notifications", 1) }
                     }
                     "recents" -> {
-                        a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
-                        ExecutionResult.Success("Recents", 1)
+                        if (a11y == null) ExecutionResult.Unverified("Recents", "accessibility not bound", step.id)
+                        else { a11y.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS); ExecutionResult.Success("Recents", 1) }
                     }
                     else -> {
                         val msg = systemController.execute(action.name, action.params)
                         if (msg.contains("fail", ignoreCase = true) || msg.contains("needed", ignoreCase = true)) {
-                            speak(msg)
+                            speak(msg, Verbosity.MIN_ERROR)
                         } else if (action.name in setOf("battery", "datetime", "contact_search")) {
-                            speak(msg)
+                            speak(msg, Verbosity.MIN_STANDARD)
                         }
                         ExecutionResult.Success(msg, 1)
                     }
                 }
             }
         }
+    }
+
+    /**
+     * GAP 2 — bounded retry-with-fallback for a single action step.
+     *
+     * Runs [block] once; if it returns a [ExecutionResult.Failed] (recoverable),
+     * sleeps [RECOVERY_DELAY_MS] (coroutine [delay], never Thread.sleep) and
+     * re-runs [block] up to [MAX_RECOVERY_ATTEMPTS] more times. Each re-run
+     * re-reads the screen inside [block] so a stale/expired target is replaced.
+     *
+     * Returns the first non-Failed result, or the last failure if all attempts fail.
+     * Non-recoverable failures are returned immediately without retrying.
+     */
+    private suspend fun retryWithRecovery(
+        label: String,
+        stepId: String?,
+        block: () -> ExecutionResult
+    ): ExecutionResult {
+        var result = block()
+        if (result !is ExecutionResult.Failed || !result.recoverable) return result
+
+        for (attempt in 1..MAX_RECOVERY_ATTEMPTS) {
+            delay(RECOVERY_DELAY_MS)
+            result = block()
+            if (result !is ExecutionResult.Failed) return result
+        }
+        Log.w(TAG, "retryWithRecovery($label): gave up after ${MAX_RECOVERY_ATTEMPTS + 1} attempts")
+        return result
     }
 
     /**
@@ -256,7 +419,14 @@ class RobotHand(
         for (i in resumeFrom until plan.steps.size) {
             currentStepIndex = i
             val result = executeStep(plan.steps[i], plan, a11y)
-            if (result is ExecutionResult.Failed) return result
+            if (result is ExecutionResult.Failed) {
+                val blockedIds = plan.steps.drop(i + 1).map { it.id }
+                return ExecutionResult.Blocked(
+                    reason = result.reason,
+                    failedStep = result.step ?: plan.steps[i].id,
+                    blockedStepIds = blockedIds
+                )
+            }
             if (result is ExecutionResult.ClarificationNeeded ||
                 result is ExecutionResult.ConfirmationNeeded) return result
         }
@@ -298,13 +468,54 @@ class RobotHand(
         }
     }
 
-    private suspend fun waitForApp(packageName: String, timeoutMs: Long, a11y: AccessibilityService): Boolean {
+    /**
+     * Determine the currently foreground package WITHOUT requiring accessibility.
+     * Tries the a11y root first if the service is bound; otherwise falls back to
+     * UsageStatsManager's top activity (no special permission needed to read the
+     * foreground app). This is how app-open stays verified on devices where a11y
+     * is disabled — the same mechanism the OS launcher / Gemini uses.
+     */
+    private fun foregroundPackage(a11y: AccessibilityService?): String? {
+        // 1) If an a11y service is bound, its rootInActiveWindow is authoritative.
+        if (a11y != null) {
+            try {
+                val root = a11y.rootInActiveWindow
+                val pkg = root?.packageName?.toString()
+                if (!pkg.isNullOrBlank()) return pkg
+            } catch (e: Exception) {
+                Log.w(TAG, "foregroundPackage: a11y root unavailable", e)
+            }
+        }
+        // 2) Fall back to UsageStatsManager — reads the current foreground task
+        //    without requiring PACKAGE_USAGE_STATS for the top resumed activity.
+        return try {
+            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
+            @Suppress("DEPRECATION")
+            val info = usm.queryEvents(SystemClock.elapsedRealtime() - 1000, SystemClock.elapsedRealtime())
+                ?: return null
+            val lastEvent = android.app.usage.UsageEvents.Event()
+            var top: String? = null
+            while (info.hasNextEvent()) {
+                info.getNextEvent(lastEvent)
+                if (lastEvent.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND ||
+                    lastEvent.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
+                    top = lastEvent.packageName
+                }
+            }
+            top?.takeIf { !it.isNullOrBlank() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun waitForApp(packageName: String, timeoutMs: Long, a11y: AccessibilityService?): Boolean {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
+        var lastFg: String? = null
         while (SystemClock.uptimeMillis() < deadline) {
-            val root = a11y.rootInActiveWindow
-            if (root != null) {
-                val pkg = try { root.packageName?.toString() ?: "" } catch (e: Exception) { "" }
-                if (pkg.equals(packageName, ignoreCase = true)) return true
+            val fg = foregroundPackage(a11y)
+            if (fg != null) {
+                lastFg = fg
+                if (fg.equals(packageName, ignoreCase = true)) return true
             }
             delay(200)
         }
@@ -318,7 +529,7 @@ class RobotHand(
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
-    private fun clickNode(node: AccessibilityNodeInfo, a11y: AccessibilityService): Boolean {
+    private fun clickNode(node: AccessibilityNodeInfo, a11y: AccessibilityService?): Boolean {
         if (node.isClickable) {
             return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
@@ -331,21 +542,22 @@ class RobotHand(
             parent = parent.parent
         }
         // Fallback: gesture tap
+        if (a11y == null) return false
         val rect = android.graphics.Rect()
         node.getBoundsInScreen(rect)
         return tap(rect.centerX().toFloat(), rect.centerY().toFloat(), a11y)
     }
 
-    private fun tap(x: Float, y: Float, a11y: AccessibilityService): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+    private fun tap(x: Float, y: Float, a11y: AccessibilityService?): Boolean {
+        if (a11y == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         return a11y.dispatchGesture(gesture, null, null)
     }
 
-    private fun dispatchGesture(action: ActionPrimitive.DispatchGesture, a11y: AccessibilityService): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+    private fun dispatchGesture(action: ActionPrimitive.DispatchGesture, a11y: AccessibilityService?): Boolean {
+        if (a11y == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         val w = context.resources.displayMetrics.widthPixels
         val h = context.resources.displayMetrics.heightPixels
 
@@ -400,8 +612,8 @@ class RobotHand(
         return true
     }
 
-    private fun findAccessibilityNode(a11y: AccessibilityService, target: UiElement): AccessibilityNodeInfo? {
-        val root = a11y.rootInActiveWindow ?: return null
+    private fun findAccessibilityNode(a11y: AccessibilityService?, target: UiElement): AccessibilityNodeInfo? {
+        val root = a11y?.rootInActiveWindow ?: return null
         return searchTree(root) { node ->
             // ponytail: match on any non-null field that the selector specifies.
             // Old code used && for ALL conditions which was too strict — a node with
@@ -444,9 +656,26 @@ class RobotHand(
         }
     }
 
-    fun speak(text: String) {
+    fun speak(text: String, minLevel: Int = Verbosity.MIN_STANDARD) {
+        // SINGLE gate: at SILENT (0) short-circuit before any TTS engine init.
+        val decision = VerbosityFilter.decide(minLevel, Verbosity.level(context))
+        if (!decision.spoken) return
         Log.i(TAG, "TTS: $text")
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "sonic_robot")
+        if (tts == null) {
+            initTts()
+        }
+        try {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "sonic_robot")
+        } catch (_: Exception) {
+            // TTS engine unavailable — non-fatal; toast/visual path is independent.
+        }
+    }
+
+    /** STEP-BY-STEP band (7-8): announce each RobotHand step as it executes. */
+    fun announceStep(stepDescription: String) {
+        if (Verbosity.level(context) >= Verbosity.MIN_STEP) {
+            speak(stepDescription, Verbosity.MIN_STEP)
+        }
     }
 
     fun destroy() {

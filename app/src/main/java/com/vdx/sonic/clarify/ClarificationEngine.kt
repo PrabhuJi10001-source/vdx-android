@@ -161,7 +161,7 @@ class ClarificationEngine {
     }
 
     private fun buildConfirmationQuestion(intent: SonicIntent): String {
-        // Keep questions ≤ ~12 words (less chatty than Louie)
+        // Keep questions ≤ ~12 words (keep questions short)
         return when (intent.type) {
             IntentType.CALL -> "Call ${intent.entities["contact"] ?: "them"}?"
             IntentType.WHATSAPP -> {

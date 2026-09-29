@@ -1,9 +1,12 @@
 package com.vdx.sonic.harness
 
 import android.view.accessibility.AccessibilityNodeInfo
+import android.os.SystemClock
 import com.vdx.sonic.Rect
 import com.vdx.sonic.ScreenModel
 import com.vdx.sonic.UiElement
+import com.vdx.sonic.NodeSelector
+import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -65,6 +68,70 @@ class Harness {
      */
     fun invalidateCache() {
         cacheTime = 0
+    }
+
+    /**
+     * Multi-condition node search (ported from common
+     * SmartFinder). Matches a node only if ALL non-null selector fields match
+     * (AND semantics). Unlike RobotHand's single-field findNode, this supports
+     * combining text + hint + className + isEditable + isClickable + isFocused
+     * in one query, and can target a specific occurrence via [index].
+     *
+     * Returns the first matching [UiElement] in tree order, or null.
+     */
+    fun findNode(screen: ScreenModel, selector: NodeSelector): UiElement? {
+        val matches = screen.elements.filter { matchesAll(it, selector) }
+        if (matches.isEmpty()) return null
+        val idx = selector.index ?: 0
+        return matches.getOrNull(idx)
+    }
+
+    /**
+     * Wait until a node matching [selector] appears, re-reading the screen each
+     * poll. Returns the matched element, or null on timeout. Ported from
+     * common waitFor()/require() primitives.
+     */
+    suspend fun waitForNode(
+        service: android.accessibilityservice.AccessibilityService?,
+        selector: NodeSelector,
+        timeoutMs: Long = 8000L
+    ): UiElement? {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            val screen = refresh(service)
+            findNode(screen, selector)?.let { return it }
+            delay(200)
+        }
+        return null
+    }
+
+    /**
+     * Validate [screen] for accessibility compliance (touch-target size,
+     * content-description presence, and focus order). Pure delegation to
+     * [AccessibilityCompliance.check]; returns an empty list when compliant.
+     */
+    fun checkCompliance(
+        screen: ScreenModel,
+        minTouchTargetSize: Int = AccessibilityCompliance.DEFAULT_MIN_TOUCH_TARGET_SIZE
+    ): List<ComplianceViolation> =
+        AccessibilityCompliance.check(screen, minTouchTargetSize)
+
+    /**
+     * AND-match a node against all non-null selector fields.
+     */
+    private fun matchesAll(el: UiElement, sel: NodeSelector): Boolean {
+        if (sel.text != null && !el.text.equals(sel.text, ignoreCase = true) &&
+            !(el.text?.contains(sel.text, ignoreCase = true) == true)) return false
+        if (sel.contentDescription != null && !el.contentDescription.equals(sel.contentDescription, ignoreCase = true) &&
+            !(el.contentDescription?.contains(sel.contentDescription, ignoreCase = true) == true)) return false
+        if (sel.hint != null && !el.hint.equals(sel.hint, ignoreCase = true) &&
+            !(el.hint?.contains(sel.hint, ignoreCase = true) == true)) return false
+        if (sel.className != null && !el.className.contains(sel.className, ignoreCase = true)) return false
+        if (sel.resourceId != null && !el.packageName.contains(sel.resourceId, ignoreCase = true)) return false
+        if (sel.isEditable != null && el.isEditable != sel.isEditable) return false
+        if (sel.isClickable != null && el.isClickable != sel.isClickable) return false
+        if (sel.isFocused != null && el.isFocused != sel.isFocused) return false
+        return true
     }
 
     // ──────────────────────────────────────────────────────────────

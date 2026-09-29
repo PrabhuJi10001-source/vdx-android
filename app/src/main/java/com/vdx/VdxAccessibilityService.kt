@@ -1,9 +1,6 @@
 package com.vdx
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
-import android.graphics.Path
-import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -14,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * VdxAccessibilityService — the core of VDX.
  *
- * A TalkBack replacement that combines:
+ * A accessibility service that combines:
  *  1. Screen reading — traverses the accessibility tree to understand what's visible.
  *  2. Robot Hand execution — performs clicks, text entry, and gestures on behalf of the user.
  *
@@ -83,7 +80,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         instance = this
         isRunning = true
         screenExtractor = ScreenContentExtractor()
-        Log.i(TAG, "VDX Accessibility Service connected — TalkBack replacement active")
+        Log.i(TAG, "VDX Accessibility Service connected — accessibility service active")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -107,6 +104,21 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
             } else if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
                 // Focus moved to a non-editable element — clear the reference
                 focusedTextField = null
+            }
+        }
+
+        // Screen-reader band (level 9-10): on window change, announce the new
+        // foreground app + screen title. The bubble service checks the dial level
+        // itself and only speaks when it is >= 9.
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString() ?: ""
+            val title = event.text
+                ?.mapNotNull { it?.toString() }
+                ?.firstOrNull { it.isNotBlank() }
+                ?: event.contentDescription?.toString()
+                ?: ""
+            if (pkg.isNotBlank() || title.isNotBlank()) {
+                BubbleForegroundService.onForegroundWindowChanged(pkg, title)
             }
         }
     }
@@ -152,7 +164,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
 
     /**
      * Recursively walk the accessibility tree, collecting visible nodes.
-     * Bounded to prevent ANR on complex screens (same limits as extractWisprOverlayText).
+     * Bounded to prevent ANR on complex screens (same limits as extractOverlayText).
      */
     private fun traverseTree(
         node: AccessibilityNodeInfo,
@@ -197,8 +209,13 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
      * This is the node the Robot Hand will [insertText] into.
      */
     fun findFocusedTextField(): AccessibilityNodeInfo? {
-        // First check the cached reference from onAccessibilityEvent
-        focusedTextField?.let { if (isEditableNode(it)) return it }
+        // First check the cached reference from onAccessibilityEvent, but never
+        // return VDX's own node (see findFocusedEditable).
+        focusedTextField?.let {
+            val pkg = try { it.packageName?.toString() } catch (e: Exception) { null }
+            val isSelf = pkg != null && pkg.equals("com.vdx.alpha", ignoreCase = true)
+            if (!isSelf && isEditableNode(it)) return it
+        }
 
         // Fall back to a tree search for the focused editable node
         val root = rootInActiveWindow ?: return null
@@ -206,7 +223,14 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
     }
 
     private fun findFocusedEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (isEditableNode(node) && node.isFocused) return node
+        // Skip VDX's own nodes entirely — the overlay's own text-input box is
+        // NOT a dictation target. Treating it as one caused commands like
+        // "open whatsapp" to be hijacked into the dictation path and throw
+        // "Couldn't insert text into the focused field" (ERROR/stuck) every time
+        // the overlay text box happened to hold focus.
+        val pkg = try { node.packageName?.toString() } catch (e: Exception) { null }
+        val isSelf = pkg != null && pkg.equals("com.vdx.alpha", ignoreCase = true)
+        if (!isSelf && isEditableNode(node) && node.isFocused) return node
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val result = findFocusedEditable(child)
@@ -314,25 +338,32 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Robot Hand — Gestures (dispatchGesture)
+    // Robot Hand — Gestures (delegated to GestureAccessibilityService)
     // ──────────────────────────────────────────────────────────────────────
+    //
+    // VDX runs a SEPARATE gesture-only accessibility service
+    // (GestureAccessibilityService) so that this base service does NOT declare
+    // canPerformGestures — a gesture-capable accessibility service can cause
+    // system lag / frame drops on some devices. These methods are kept here for
+    // backward compatibility (legacy callers) but delegate the actual gesture
+    // dispatch to the gesture service.
 
     /**
-     * Tap at the given screen coordinates.  Uses [dispatchGesture] with a short
-     * tap-start / tap-end stroke.
+     * Tap at the given screen coordinates.  Delegates to
+     * [GestureAccessibilityService.tap].
      */
     fun tap(x: Float, y: Float, durationMs: Long = 50): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
-        val path = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        val ok = dispatchGesture(gesture, null, null)
-        Log.i(TAG, "tap($x, $y) → $ok")
-        return ok
+        val gesture = GestureAccessibilityService.instance
+        if (gesture == null) {
+            Log.w(TAG, "tap: gesture service not running")
+            return false
+        }
+        return gesture.tap(x, y, durationMs)
     }
 
     /**
      * Swipe from (startX, startY) to (endX, endY) over [durationMs] milliseconds.
+     * Delegates to [GestureAccessibilityService.swipe].
      */
     fun swipe(
         startX: Float,
@@ -341,34 +372,38 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         endY: Float,
         durationMs: Long = 300
     ): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
-        val path = Path().apply {
-            moveTo(startX, startY)
-            lineTo(endX, endY)
+        val gesture = GestureAccessibilityService.instance
+        if (gesture == null) {
+            Log.w(TAG, "swipe: gesture service not running")
+            return false
         }
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        val ok = dispatchGesture(gesture, null, null)
-        Log.i(TAG, "swipe($startX,$startY → $endX,$endY) → $ok")
-        return ok
+        return gesture.swipe(startX, startY, endX, endY, durationMs)
     }
 
     /**
      * Swipe up — useful for scrolling lists / closing keyboards.
+     * Delegates to [GestureAccessibilityService.swipeUp].
      */
     fun swipeUp(distance: Float = 500f): Boolean {
-        val w = resources.displayMetrics.widthPixels
-        val h = resources.displayMetrics.heightPixels
-        return swipe(w / 2f, h * 0.7f, w / 2f, h * 0.7f - distance)
+        val gesture = GestureAccessibilityService.instance
+        if (gesture == null) {
+            Log.w(TAG, "swipeUp: gesture service not running")
+            return false
+        }
+        return gesture.swipeUp(distance)
     }
 
     /**
      * Swipe down — pull notifications, scroll up.
+     * Delegates to [GestureAccessibilityService.swipeDown].
      */
     fun swipeDown(distance: Float = 500f): Boolean {
-        val w = resources.displayMetrics.widthPixels
-        val h = resources.displayMetrics.heightPixels
-        return swipe(w / 2f, h * 0.3f, w / 2f, h * 0.3f + distance)
+        val gesture = GestureAccessibilityService.instance
+        if (gesture == null) {
+            Log.w(TAG, "swipeDown: gesture service not running")
+            return false
+        }
+        return gesture.swipeDown(distance)
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -402,18 +437,18 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Bounded Wispr Overlay Text Extraction
+    // Bounded overlay Text Extraction
     // ──────────────────────────────────────────────────────────────────────
 
     /**
-     * Extract text from a Wispr Flow overlay using a bounded accessibility
+     * Extract text from a tap-to-talk overlay using a bounded accessibility
      * node walker.  Guarantees sub-10ms processing:
-     *  - maxDepth = 3 (Wispr's overlay is shallow)
+     *  - maxDepth = 3 (the overlay is shallow)
      *  - maxNodes = 50 (hard stop to prevent ANR)
      *
      * Text fallback cascade: text → contentDescription → hint
      */
-    fun extractWisprOverlayText(
+    fun extractOverlayText(
         rootNode: AccessibilityNodeInfo?,
         currentDepth: Int = 0,
         visitedCount: AtomicInteger = AtomicInteger(0)
@@ -429,7 +464,7 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         }
 
         for (i in 0 until rootNode.childCount) {
-            val result = extractWisprOverlayText(rootNode.getChild(i), currentDepth + 1, visitedCount)
+            val result = extractOverlayText(rootNode.getChild(i), currentDepth + 1, visitedCount)
             if (result != null) return result
         }
         return null

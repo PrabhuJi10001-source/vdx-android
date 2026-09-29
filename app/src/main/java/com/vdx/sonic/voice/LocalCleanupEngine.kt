@@ -1,7 +1,7 @@
 package com.vdx.sonic.voice
 
 /**
- * LocalCleanupEngine — always-on Wispr-style cleanup with zero network.
+ * LocalCleanupEngine — always-on filler-stripping cleanup with zero network.
  *
  * Beats chatty assistants on rambling speech by stripping fillers and
  * applying course-corrections before intent parse. Cloud CleanupEngine
@@ -10,7 +10,7 @@ package com.vdx.sonic.voice
 object LocalCleanupEngine {
 
     private val FILLERS = Regex(
-        """\b(uh+|um+|erm+|ah+|like|you know|basically|actually|so yeah|i mean|kind of|kinda|sort of|sorta)\b""",
+        """\b(uh+|um+|erm+|ah+|you know|basically|actually|so yeah|i mean|kind of|kinda|sort of|sorta)\b""",
         RegexOption.IGNORE_CASE
     )
 

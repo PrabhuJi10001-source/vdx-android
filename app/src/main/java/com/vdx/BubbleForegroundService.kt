@@ -42,7 +42,11 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import com.vdx.sonic.*
-import java.util.Locale
+import com.vdx.settings.Verbosity
+import com.vdx.settings.VerbosityFilter
+import com.vdx.sonic.overlay.TargetHighlightOverlay
+import com.vdx.sonic.voice.DictationInserter
+import com.vdx.sonic.voice.PcmMicCapture
 
 /**
  * BubbleForegroundService — Messenger-style floating chat-head bubble.
@@ -71,12 +75,29 @@ class BubbleForegroundService : Service() {
 
         var isRunning = false
             private set
+
+        /** Live service instance, set in onCreate / cleared in onDestroy. */
+        @Volatile
+        var runningInstance: BubbleForegroundService? = null
+            private set
+
         private const val CHANNEL_ID = "vdx_bubble"
         private const val NOTIF_ID = 1
 
         /** Called by VdxAccessibilityService when a text field gains focus. */
         fun onTextFieldFocused() {
             // future hook; currently the service polls on demand
+        }
+
+        /**
+         * Screen-reader band (level 9-10): called by VdxAccessibilityService on
+         * TYPE_WINDOW_STATE_CHANGED so a new foreground app/screen is announced.
+         */
+        fun onForegroundWindowChanged(packageName: String, title: String) {
+            val instance = runningInstance ?: return
+            if (Verbosity.level(instance) >= Verbosity.MIN_SCREEN) {
+                instance.announceForeground(packageName, title)
+            }
         }
     }
 
@@ -106,9 +127,23 @@ class BubbleForegroundService : Service() {
     private var bubbleX = 0
     private var bubbleY = 0
 
+    // GAP 1: visual target-highlight overlay (default OFF). Lazily created once
+    // the WindowManager is available so it never interferes with the bubble.
+    private var targetHighlight: TargetHighlightOverlay? = null
+
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var isListening = false
+    /** Re-entry guard for the text-input submit (one Enter can fire onEditorAction twice). */
+    private var textSubmitInFlight = false
+
+    // Dictation inserter — lands dictated text into the focused field using the
+    // soniqo/speech-android pattern (non-focusable overlay + ACTION_SET_TEXT +
+    // clipboard-paste fallback). Lazily created so it never touches the clipboard
+    // unless a dictation is actually being inserted.
+    private val dictationInserter: DictationInserter by lazy { DictationInserter(this) }
+    private val pcmCapture = PcmMicCapture()
+    private var usingPcm = false
 
     // VDX Sonic engine
     private val sonicEngine: SonicEngine by lazy {
@@ -133,7 +168,7 @@ class BubbleForegroundService : Service() {
             }
             onClarification = { request ->
                 handler.post {
-                    speak(request.question)
+                    speak(request.question, Verbosity.MIN_CONFIRM)
                     // Store pending clarification
                     pendingClarification = request
                 }
@@ -149,7 +184,7 @@ class BubbleForegroundService : Service() {
                             }, 2000)
                         }
                         is ExecutionResult.Failed -> {
-                            speak(result.reason)
+                            speak(result.reason, Verbosity.MIN_ERROR)
                             currentState = BubbleState.ERROR
                             handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
                         }
@@ -162,7 +197,7 @@ class BubbleForegroundService : Service() {
             }
             onError = { message ->
                 handler.post {
-                    speak(message)
+                    speak(message, Verbosity.MIN_ERROR)
                     currentState = BubbleState.ERROR
                     handler.postDelayed({ currentState = BubbleState.IDLE }, 2000)
                 }
@@ -188,8 +223,13 @@ class BubbleForegroundService : Service() {
         super.onCreate()
         Log.d(TAG, "onCreate: BubbleForegroundService starting")
         isRunning = true
+        runningInstance = this
         createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        startForeground(
+            NOTIF_ID,
+            buildNotification(),
+            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        )
         initTTS()
         showBubble()
         Log.d(TAG, "onCreate: service started, bubble should be visible")
@@ -205,6 +245,7 @@ class BubbleForegroundService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "onDestroy: cleaning up BubbleForegroundService")
         isRunning = false
+        runningInstance = null
         stopPulse()
         hideExecutingOverlay()
         bubbleView?.let { windowManager?.removeView(it) }
@@ -213,8 +254,12 @@ class BubbleForegroundService : Service() {
         textOverlay = null
         speechRecognizer?.destroy()
         speechRecognizer = null
+        // Detach the target-highlight overlay (idempotent, safe even if never shown).
+        targetHighlight?.hide()
+        targetHighlight = null
         tts?.stop()
         tts?.shutdown()
+        if (pcmCapture.isRunning) pcmCapture.stop()
         Log.d(TAG, "onDestroy: service destroyed")
     }
 
@@ -257,45 +302,52 @@ class BubbleForegroundService : Service() {
         Log.d(TAG, "initTTS: initializing TextToSpeech with Google TTS engine")
         tts = TextToSpeech(this, { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
+                // Locale-aware TTS: use the active PromptTemplate locale.
+                val ttsLocale = com.vdx.sonic.voice.PromptTemplate.ttsLocale()
+                tts?.language = ttsLocale
                 // ISSUE 2(c): Audio attributes with USAGE_ASSISTANT and CONTENT_TYPE_SPEECH
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ASSISTANT)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
                 tts?.setAudioAttributes(audioAttributes)
-                Log.d(TAG, "initTTS: TTS ready, language=${Locale.US}, audioAttrs=USAGE_ASSISTANT/CONTENT_TYPE_SPEECH")
+                Log.d(TAG, "initTTS: TTS ready, language=$ttsLocale, audioAttrs=USAGE_ASSISTANT/CONTENT_TYPE_SPEECH")
             } else {
                 Log.e(TAG, "initTTS: TTS init failed, status=$status")
             }
         }, "com.google.android.tts")
     }
 
-    private fun speak(text: String) {
+    private fun speak(text: String, minLevel: Int = Verbosity.MIN_STANDARD) {
         Log.d(TAG, "speak: \"$text\"")
-        // ISSUE 2(b): Set STREAM_MUSIC to max volume so TTS is loud
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.setStreamVolume(
-            AudioManager.STREAM_MUSIC,
-            audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
-            0
-        )
-        // ISSUE 2(a): Request transient audio focus on STREAM_MUSIC
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .build()
-            audioManager.requestAudioFocus(focusRequest)
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        // SINGLE choke point for TTS at every level. Visual feedback (the toast) is
+        // unconditional — a deaf user reads every message. Only the AUDIO is gated.
+        val decision = VerbosityFilter.decide(minLevel, Verbosity.level(this))
+        if (decision.spoken) {
+            // ISSUE 2(b): Set STREAM_MUSIC to max volume so TTS is loud
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+                0
+            )
+            // ISSUE 2(a): Request transient audio focus on STREAM_MUSIC
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .build()
+                audioManager.requestAudioFocus(focusRequest)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            }
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "vdx_utterance")
         }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "vdx_utterance")
         showTopToast(text)
     }
 
@@ -306,6 +358,36 @@ class BubbleForegroundService : Service() {
         toast.show()
         Log.d(TAG, "Toast: $text")
     }
+
+    /**
+     * Screen-reader band (level 9-10): speak a one-line summary of the new foreground
+     * app + screen title when the accessibility service reports a window change, and
+     * mirror it visually via the toast so deaf users see it too.
+     */
+    fun announceForeground(packageName: String, title: String) {
+        val appLabel = friendlyAppName(packageName)
+        val summary = buildString {
+            append(if (appLabel.isNotBlank()) appLabel else "App opened")
+            if (title.isNotBlank() && title != appLabel) append(": $title")
+        }
+        speak(summary, Verbosity.MIN_SCREEN)
+    }
+
+    /** Best-effort human-readable app name from the package token; blank when unknown. */
+    private fun friendlyAppName(packageName: String): String {
+        if (packageName.isBlank()) return ""
+        // Use the installed app's label when resolvable.
+        return try {
+            packageManager.getApplicationInfo(packageName, 0)?.let {
+                packageManager.getApplicationLabel(it).toString()
+            } ?: lastPackageSegment(packageName)
+        } catch (_: Exception) {
+            lastPackageSegment(packageName)
+        }
+    }
+
+    private fun lastPackageSegment(packageName: String): String =
+        packageName.substringAfterLast('.').replaceFirstChar { it.titlecase() }
 
     // ──────────────────────────────────────────────────────────────────────
     // Bubble View
@@ -325,6 +407,28 @@ class BubbleForegroundService : Service() {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else
             @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+
+    // ──────────────────────────────────────────────────────────────────────
+    // GAP 1: Target highlight overlay
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Toggle the visual target-highlight overlay that paints subtle outlines over
+     * the current screen's actionable elements (clickable / scrollable / editable)
+     * so a low-vision user can see where to tap. Default OFF.
+     */
+    fun toggleTargetHighlight() {
+        val wm = windowManager ?: return
+        val highlight = targetHighlight ?: TargetHighlightOverlay(this, wm).also {
+            targetHighlight = it
+        }
+        highlight.toggle()
+        if (highlight.isVisible()) {
+            showTopToast("Target highlights on — tap a highlighted element")
+        } else {
+            showTopToast("Target highlights off")
+        }
+    }
 
     private fun showBubble() {
         Log.d(TAG, "showBubble: creating bubble overlay")
@@ -738,21 +842,24 @@ class BubbleForegroundService : Service() {
     // ──────────────────────────────────────────────────────────────────────
 
     private fun onTap() {
-        Log.d(TAG, "onTap: isListening=$isListening")
+        Log.d(TAG, "onTap: isListening=$isListening usingPcm=$usingPcm")
         if (!isListening) {
             startVoiceCapture()
         } else {
             isListening = false
             currentState = BubbleState.THINKING
-            stopVoiceCaptureAndProcess()
+            if (usingPcm) stopPcmAndProcess()
+            else stopVoiceCaptureAndProcess()
         }
     }
 
     private fun onLongPress() {
         Log.d(TAG, "onLongPress: showing diagnostics")
         if (isListening) {
-            speechRecognizer?.stopListening()
+            if (usingPcm) pcmCapture.stop()
+            else speechRecognizer?.stopListening()
             isListening = false
+            usingPcm = false
         }
         showDiagnosticsOverlay()
     }
@@ -762,14 +869,28 @@ class BubbleForegroundService : Service() {
     // ──────────────────────────────────────────────────────────────────────
 
     private fun startVoiceCapture() {
-        Log.d(TAG, "startVoiceCapture: using Android SpeechRecognizer")
+        Log.d(TAG, "startVoiceCapture")
         if (isListening) {
             Log.w(TAG, "startVoiceCapture: already listening, ignoring")
             return
         }
+
+        // BYOK Groq/Sarvam: tap-to-talk PCM → SonicEngine.transcribe (already built).
+        // No keys: on-device SpeechRecognizer (Play-clean default).
+        if (sonicEngine.hasCloudAsr() && pcmCapture.start()) {
+            usingPcm = true
+            isListening = true
+            currentState = BubbleState.LISTENING
+            showTopToast("Listening...")
+            Log.d(TAG, "startVoiceCapture: PCM path (Groq/Sarvam)")
+            return
+        }
+
+        usingPcm = false
         isListening = true
         currentState = BubbleState.LISTENING
-        showTopToast("🎤 Listening...")
+        showTopToast("Listening...")
+        Log.d(TAG, "startVoiceCapture: using Android SpeechRecognizer")
 
         if (speechRecognizer == null) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
@@ -778,7 +899,7 @@ class BubbleForegroundService : Service() {
             Log.e(TAG, "startVoiceCapture: SpeechRecognizer not available")
             isListening = false
             currentState = BubbleState.ERROR
-            speak("Speech recognition not available on this device")
+            speak("Speech recognition not available on this device", Verbosity.MIN_ERROR)
             return
         }
 
@@ -822,7 +943,7 @@ class BubbleForegroundService : Service() {
                 handler.post {
                     isListening = false
                     currentState = BubbleState.ERROR
-                    speak(msg)
+                    speak(msg, Verbosity.MIN_ERROR)
                     handler.postDelayed({
                         currentState = BubbleState.IDLE
                         showTextInputOverlay()
@@ -837,6 +958,26 @@ class BubbleForegroundService : Service() {
                     isListening = false
                     if (!transcript.isNullOrBlank()) {
                         currentState = BubbleState.THINKING
+                        // Dictation mode: if an editable text field currently has
+                        // input focus, the transcript is dictation — insert it into
+                        // that field directly (non-focusable overlay + ACTION_SET_TEXT
+                        // + clipboard-paste fallback) instead of running it through
+                        // the command pipeline. This is the soniqo/speech-android
+                        // pattern: the bubble never steals focus, so the target field
+                        // keeps it and the text lands reliably.
+                        if (com.vdx.VdxAccessibilityService.instance?.findFocusedTextField() != null) {
+                            val ok = dictationInserter.insert(transcript)
+                            if (ok) {
+                                currentState = BubbleState.DONE
+                                showTopToast("✓ Dictated")
+                                handler.postDelayed({ currentState = BubbleState.IDLE }, 1200)
+                            } else {
+                                currentState = BubbleState.ERROR
+                                speak("Couldn't insert text into the focused field", Verbosity.MIN_ERROR)
+                                handler.postDelayed({ currentState = BubbleState.IDLE }, 1200)
+                            }
+                            return@post
+                        }
                         // Wake-word handling: "Hey Vision <command>" → strip the phrase,
                         // process the command hands-free. Pure activation ("Hey Vision")
                         // just re-arms listening for the follow-up command.
@@ -854,10 +995,19 @@ class BubbleForegroundService : Service() {
                             confidence = 0.85f,
                             provider = "google"
                         )
-                        sonicEngine.processFromText(command, syntheticResult)
+                        // If a clarification/confirmation is pending, route the spoken
+                        // response to it (e.g. "yes" to a DRAFT_NOTE confirmation) rather
+                        // than parsing it as a fresh command.
+                        val pending = pendingClarification
+                        if (pending != null) {
+                            pendingClarification = null
+                            sonicEngine.handleClarificationResponse(pending, command)
+                        } else {
+                            sonicEngine.processFromText(command, syntheticResult)
+                        }
                     } else {
                         currentState = BubbleState.ERROR
-                        speak("I didn't catch that")
+                        speak("I didn't catch that", Verbosity.MIN_ERROR)
                         handler.postDelayed({ currentState = BubbleState.IDLE }, 1000)
                     }
                 }
@@ -880,10 +1030,34 @@ class BubbleForegroundService : Service() {
     private fun recognizerIntent(): Intent {
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            // Locale-aware STT: use the active PromptTemplate locale for speech recognition.
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, com.vdx.sonic.voice.PromptTemplate.sttLanguageTag())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
+    }
+
+    /**
+     * Second orb tap on the PCM path: stop the recorder and run Groq→Sarvam.
+     */
+    private fun stopPcmAndProcess() {
+        val pcm = pcmCapture.stop()
+        usingPcm = false
+        if (pcm.isEmpty()) {
+            currentState = BubbleState.ERROR
+            speak("I didn't catch that", Verbosity.MIN_ERROR)
+            handler.postDelayed({ currentState = BubbleState.IDLE }, 1000)
+            return
+        }
+        sonicEngine.process(
+            CaptureSession(
+                audioData = pcm,
+                timestamp = System.currentTimeMillis(),
+                foregroundPackage = null,
+                focusedFieldState = null,
+                uiSnapshot = null
+            )
+        )
     }
 
     /**
@@ -914,7 +1088,7 @@ class BubbleForegroundService : Service() {
                 append("\nBlocked: ${blockers.joinToString("; ")}")
             }
         }
-        speak(if (blockers.isEmpty()) "All systems ready." else blockers.first())
+        speak(if (blockers.isEmpty()) "All systems ready." else blockers.first(), Verbosity.MIN_STANDARD)
         showTopToast(summary.replace("\n", " · "))
 
         // Offer keyboard fallback after diagnostics
@@ -1004,7 +1178,13 @@ class BubbleForegroundService : Service() {
         }
 
         // Submit on Enter
+        // Guard against double-fire: one Enter can trigger onEditorAction twice
+        // (IME action + key event) ~16ms apart. The flag must persist past the
+        // second fire, so it is reset on a delay, not in a finally block.
         editText.setOnEditorActionListener { _, _, _ ->
+            if (textSubmitInFlight) return@setOnEditorActionListener true
+            textSubmitInFlight = true
+            handler.postDelayed({ textSubmitInFlight = false }, 500)
             val text = editText.text.toString().trim()
             removeTextOverlay()
             if (text.isNotBlank()) {
@@ -1022,6 +1202,57 @@ class BubbleForegroundService : Service() {
                 currentState = BubbleState.IDLE
             }
             true
+        }
+
+        // Tethered hardware / BT keyboard tether — works at EVERY level including 0.
+        // Focus lands in this overlay EditText, so USB/BT key events arrive here.
+        // Enter submits (the shared double-fire guard protects the path from both
+        // the IME action above and a raw KEYCODE_ENTER below); Escape cancels
+        // listening without submitting.
+        editText.setOnKeyListener { _, keyCode, event ->
+            if (event.action == android.view.KeyEvent.ACTION_UP) {
+                when (keyCode) {
+                    android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                        // Let the IME editor-action path handle submission when the
+                        // IME action is active; only drive submission directly for a
+                        // hardware Enter when the IME is not the source.
+                        if (event.getRepeatCount() == 0 && !textSubmitInFlight) {
+                            textSubmitInFlight = true
+                            handler.postDelayed({ textSubmitInFlight = false }, 500)
+                            val text = editText.text.toString().trim()
+                            removeTextOverlay()
+                            if (text.isNotBlank()) {
+                                Log.d(TAG, "hardware key submit: \"$text\"")
+                                showTopToast("Heard: $text")
+                                currentState = BubbleState.THINKING
+                                val pending = pendingClarification
+                                if (pending != null) {
+                                    pendingClarification = null
+                                    sonicEngine.handleClarificationResponse(pending, text)
+                                } else {
+                                    sonicEngine.processText(text)
+                                }
+                            } else {
+                                currentState = BubbleState.IDLE
+                            }
+                        }
+                        true
+                    }
+                    android.view.KeyEvent.KEYCODE_ESCAPE -> {
+                        Log.d(TAG, "hardware key: Escape cancels")
+                        removeTextOverlay()
+                        currentState = BubbleState.IDLE
+                        true
+                    }
+                    else -> false
+                }
+            } else {
+                // Consume the DOWN of keys we handle on UP so they never leak through.
+                when (keyCode) {
+                    android.view.KeyEvent.KEYCODE_ESCAPE -> true
+                    else -> false
+                }
+            }
         }
 
         textOverlay = frame

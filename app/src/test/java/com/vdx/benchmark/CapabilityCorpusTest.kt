@@ -1,16 +1,16 @@
 package com.vdx.benchmark
 
 import com.vdx.sonic.IntentType
-import com.vdx.sonic.flows.LouieFlowCatalog
+import com.vdx.sonic.flows.FlowCatalog
 import com.vdx.sonic.voice.IntentParser
 import com.vdx.sonic.voice.LocalCleanupEngine
 import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Louie parity gates — understanding + non-empty Louie-depth plans.
+ * V1 capability corpus — understanding + non-empty full-depth plans.
  */
-class LouieParityBenchmarkTest {
+class CapabilityCorpusTest {
 
     private val parser = IntentParser()
 
@@ -40,7 +40,7 @@ class LouieParityBenchmarkTest {
     )
 
     @Test
-    fun louieCorpus_understandingAtLeast90Percent() {
+    fun corpus_understandingMustBeComplete() {
         var pass = 0
         for (c in cases) {
             val intent = parser.parse(LocalCleanupEngine.clean(c.spoken))
@@ -52,16 +52,16 @@ class LouieParityBenchmarkTest {
             }
         }
         val pct = pass * 100.0 / cases.size
-        println("Louie understanding: $pass/${cases.size} = $pct%")
-        assertTrue("Need ≥90% Louie corpus understanding", pct >= 90.0)
+        println("corpus understanding: $pass/${cases.size} = $pct%")
+        assertTrue("Need 100% corpus understanding (a 90% bar hides two lies)", pct >= 100.0)
     }
 
     @Test
-    fun louieFlows_produceNonEmptyPlans() {
+    fun flows_produceNonEmptyPlans() {
         for (c in cases) {
             val intent = parser.parse(LocalCleanupEngine.clean(c.spoken))
             if (intent.type == IntentType.UNKNOWN) continue
-            val plan = LouieFlowCatalog.plan(intent)
+            val plan = FlowCatalog.plan(intent)
             assertTrue("Empty plan for ${c.spoken}", plan.steps.isNotEmpty())
         }
     }

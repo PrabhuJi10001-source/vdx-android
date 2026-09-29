@@ -6,7 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * V2 MemoryStore — graph-backed persistent memory (nodes, edges, episodes, contradictions).
+ * On-device Room memory for the phone app.
+ *
+ * Contacts, prefs, aliases, a small action log — SQLite on the device.
+ * Not Agent OS, not KGS, not a cloud graph. Caps keep recall cheap on a phone.
  */
 class MemoryStore(private val context: Context) {
 
@@ -22,10 +25,12 @@ class MemoryStore(private val context: Context) {
         name: String,
         value: String,
         contextNote: String = "",
-        aliases: String = ""
+        aliases: String = "",
+        source: String = "user",
+        scope: String = "global"
     ) {
         kotlinx.coroutines.runBlocking {
-            rememberSuspend(type, name, value, contextNote, aliases)
+            rememberSuspend(type, name, value, contextNote, aliases, source, scope)
         }
     }
 
@@ -34,7 +39,9 @@ class MemoryStore(private val context: Context) {
         name: String,
         value: String,
         contextNote: String = "",
-        aliases: String = ""
+        aliases: String = "",
+        source: String = "user",
+        scope: String = "global"
     ) {
         val key = name.lowercase().trim()
         val existing = nodeDao.getByName(key) ?: nodeDao.getByName(name)
@@ -56,17 +63,22 @@ class MemoryStore(private val context: Context) {
                     value = value,
                     context = contextNote,
                     aliases = aliases.ifBlank { existing.aliases },
+                    source = source,
+                    scope = scope,
                     updatedAt = System.currentTimeMillis()
                 )
             )
         } else {
+            if (nodeDao.count() >= MAX_NODES) return
             nodeDao.upsert(
                 MemoryNode(
                     type = type,
                     name = key,
                     value = value,
                     context = contextNote,
-                    aliases = aliases.ifBlank { key }
+                    aliases = aliases.ifBlank { key },
+                    source = source,
+                    scope = scope
                 )
             )
         }
@@ -101,7 +113,7 @@ class MemoryStore(private val context: Context) {
         }
     }
 
-    suspend fun recallPath(startName: String, maxDepth: Int = 3): List<MemoryNode> {
+    suspend fun recallPath(startName: String, maxDepth: Int = MAX_GRAPH_DEPTH): List<MemoryNode> {
         val start = nodeDao.getByName(startName.lowercase()) ?: nodeDao.getByName(startName) ?: return emptyList()
         val visited = linkedSetOf<Long>()
         var frontier = listOf(start.id)
@@ -137,6 +149,54 @@ class MemoryStore(private val context: Context) {
     }
 
     suspend fun search(query: String): List<MemoryNode> = nodeDao.search(query)
+
+    /**
+     * Ranked, deduped, relevance-scored retrieval.
+     * Charter: retrieve only relevant memories; rank by relevance AND recency;
+     * deduplicate overlapping data. Returns scored nodes, most relevant first.
+     */
+    suspend fun retrieveRelevant(query: String, maxResults: Int = MAX_RECALL, scopeFilter: String? = null): List<ScoredMemory> {
+        val t = query.lowercase().trim()
+        val words = t.split(Regex("""\s+""")).filter { it.length > 2 }
+
+        val matches = LinkedHashMap<Long, ScoredMemory>()
+        // exact-name / alias hits rank highest
+        val byName = nodeDao.getByName(t) ?: nodeDao.search(t).firstOrNull()
+        if (byName != null) {
+            matches[byName.id] = ScoredMemory(byName, 1.0f, System.currentTimeMillis() - byName.lastReadAt)
+        }
+        // token matches (relevance = token overlap, then weighted by vitality & recency)
+        for (word in words) {
+            nodeDao.search(word).forEach { node ->
+                if (scopeFilter != null && node.scope != scopeFilter && node.scope != "global") return@forEach
+                val relevance = computeRelevance(node, word, t)
+                val existing = matches[node.id]
+                if (existing == null || relevance > existing.score) {
+                    matches[node.id] = ScoredMemory(node, relevance, System.currentTimeMillis() - node.lastReadAt)
+                }
+            }
+        }
+        return matches.values
+            .sortedWith(compareByDescending<ScoredMemory> { it.score }.thenBy { it.ageReadMs })
+            .take(maxResults)
+    }
+
+    private fun computeRelevance(node: MemoryNode, word: String, fullQuery: String): Float {
+        val tokens = node.name.split(Regex("""\s+""")) + node.aliases.split(',').map { it.trim().lowercase() }
+        var score = 0.0f
+        if (node.name == word) score += 1.0f
+        if (tokens.any { it == word }) score += 0.6f
+        if (node.value.lowercase().contains(word)) score += 0.3f
+        if (node.context.lowercase().contains(fullQuery)) score += 0.2f
+        return score.coerceAtMost(1.0f)
+    }
+
+    data class ScoredMemory(
+        val node: MemoryNode,
+        val score: Float,
+        val ageReadMs: Long
+    )
+
 
     suspend fun getByType(type: String): List<MemoryNode> = nodeDao.getByType(type)
 
@@ -209,6 +269,11 @@ class MemoryStore(private val context: Context) {
     }
 
     companion object {
+        /** Phone cap — this is not a knowledge graph service. */
+        const val MAX_NODES = 500
+        const val MAX_RECALL = 5
+        const val MAX_GRAPH_DEPTH = 2
+
         private val TYPE_DECAY = mapOf(
             "fact" to 0.01f,
             "rule" to 0.01f,

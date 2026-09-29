@@ -15,6 +15,10 @@ data class MemoryNode(
     val properties: String = "{}",
     val confidence: Float = 0.90f,
     val confidenceSource: String = "user-confirmed",
+    /** Provenance — where this memory came from (transcript, user, context, observation). */
+    val source: String = "user",
+    /** Visibility scope (global, project, session) — charter requires scoped memory. */
+    val scope: String = "global",
     val vitalityScore: Float = 50f,
     val vitalityState: String = "active",
     val reads7d: Int = 0,

@@ -11,6 +11,8 @@ import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.vdx.settings.Verbosity
+import com.vdx.settings.VerbosityFilter
 import java.util.Locale
 
 /**
@@ -19,7 +21,7 @@ import java.util.Locale
  * Takes a parsed [VdxIntent] and executes it step by step inside target apps using
  * [VdxAccessibilityService].  This is NOT deep-link navigation — it launches the app,
  * waits for it to load, then walks the accessibility tree to find fields, type text,
- * and tap elements, just like Louie Voice Control does.
+ * and tap elements, just like the V1 capability bar does.
  *
  * Design principles for blind / low-vision users:
  *  - Speak a brief confirmation before starting ("Calling Mom", "Opening WhatsApp for Ravi").
@@ -962,6 +964,10 @@ class RobotHand(
 
     /** Speak via TTS if available. */
     private fun speak(text: String) {
+        // SINGLE gate: at SILENT (0) short-circuit before any TTS call. Visual
+        // feedback path is independent and unaffected.
+        val decision = VerbosityFilter.decide(Verbosity.MIN_STANDARD, Verbosity.level(context))
+        if (!decision.spoken) return
         Log.i(TAG, "TTS: $text")
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "robot_hand_utterance")
     }

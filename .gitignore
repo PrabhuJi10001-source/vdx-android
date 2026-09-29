@@ -22,3 +22,7 @@ local.properties
 # Screenshots
 *.png
 !app/src/main/res/**/*.png
+
+# Local APK drops and machine notes — not product source
+dist/
+HANDOVER-IDA.md

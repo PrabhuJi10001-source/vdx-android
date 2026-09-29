@@ -12,6 +12,7 @@
         android:gravity="center_horizontal">
 
         <TextView
+            android:id="@+id/title_vdx"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
@@ -21,24 +22,46 @@
             android:textColor="#6c3aed" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="Say it. VDX taps it.\nCalls, chats, rides — hands-free."
+            android:textSize="16sp"
+            android:textColor="#1a1a2e" />
+
+        <EditText
+            android:id="@+id/text_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:hint="Try call Mom, WhatsApp, Uber…"
+            android:textColor="#1a1a2e"
+            android:textColorHint="#8a8a8e"
+            android:background="#ffffff"
+            android:padding="14dp"
+            android:textSize="16sp"
+            android:inputType="text"
+            android:imeOptions="actionSend" />
+
+        <LinearLayout
+            android:id="@+id/suggest_list"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Voice-First Intent Runtime"
-            android:textSize="14sp"
-            android:textColor="#3a3a3c" />
+            android:orientation="vertical" />
 
         <TextView
             android:id="@+id/status_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="20dp"
             android:padding="16dp"
             android:background="#ffffff"
             android:textColor="#1a1a2e"
             android:textSize="13sp"
             android:lineSpacingExtra="3dp"
-            android:text="VDX V1 — 0.1.0-alpha" />
+            android:text="Setup" />
 
         <TextView
             android:id="@+id/permission_detail"
@@ -56,7 +79,7 @@
             android:layout_marginTop="16dp"
             android:background="#6c3aed"
             android:textColor="#ffffff"
-            android:text="🎤 Grant Microphone"
+            android:text="Grant Microphone"
             android:textSize="16sp"
             android:textAllCaps="false" />
 
@@ -67,272 +90,118 @@
             android:layout_marginTop="8dp"
             android:background="#e0e0e0"
             android:textColor="#1a1a2e"
-            android:text="Enable Accessibility"
+            android:text="Turn on VDX in Accessibility"
             android:textSize="14sp"
-            android:textAllCaps="false"
-            android:visibility="gone" />
+            android:textAllCaps="false" />
 
-        <EditText
-            android:id="@+id/text_input"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:hint="Type: call mom, whatsapp john, uber to airport..."
-            android:textColor="#1a1a2e"
-            android:textColorHint="#8a8a8e"
-            android:background="#ffffff"
-            android:padding="14dp"
-            android:textSize="14sp"
-            android:inputType="text"
-            android:imeOptions="actionSend" />
-
-        <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- DEVELOPER HARNESS — RobotHand direct execution test buttons -->
-        <!-- ════════════════════════════════════════════════════════════ -->
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="⚙ Developer Harness — RobotHand Direct Test"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:textColor="#6c3aed"
-            android:padding="8dp"
-            android:background="#f0edff" />
-
-        <!-- Row 1 -->
         <LinearLayout
+            android:id="@+id/labs_section"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
+            android:orientation="vertical"
+            android:visibility="gone">
 
-            <Button
-                android:id="@+id/btn_test_youtube"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#3b82f6"
-                android:textColor="#ffffff"
-                android:text="YouTube"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-            <Button
-                android:id="@+id/btn_test_dialer"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#22c55e"
-                android:textColor="#ffffff"
-                android:text="Dialer"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-        </LinearLayout>
-
-        <!-- Row 2 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_test_settings"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#f59e0b"
-                android:textColor="#ffffff"
-                android:text="Settings"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-            <Button
-                android:id="@+id/btn_test_readscreen"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#8b5cf6"
-                android:textColor="#ffffff"
-                android:text="Read Screen"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-        </LinearLayout>
-
-        <!-- Row 3 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_test_readsms"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#ef4444"
-                android:textColor="#ffffff"
-                android:text="Read SMS"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-            <Button
-                android:id="@+id/btn_test_call"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#10b981"
-                android:textColor="#ffffff"
-                android:text="Call"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-        </LinearLayout>
-
-        <!-- Row 4 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_test_whatsapp"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#25D366"
-                android:textColor="#ffffff"
-                android:text="WhatsApp"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-            <Button
-                android:id="@+id/btn_test_uber"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#000000"
-                android:textColor="#ffffff"
-                android:text="Uber"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-        </LinearLayout>
-
-        <!-- Row 5 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_test_sms"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#6366f1"
-                android:textColor="#ffffff"
-                android:text="SMS"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-            <Button
-                android:id="@+id/btn_test_email"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#ea580c"
-                android:textColor="#ffffff"
-                android:text="Email"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
-
-        </LinearLayout>
-
-        <!-- Row 6: Run All + Clear -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_test_all"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:background="#6c3aed"
-                android:textColor="#ffffff"
-                android:text="▶ Run All Tests"
-                android:textSize="12sp"
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Labs"
+                android:textSize="14sp"
                 android:textStyle="bold"
-                android:textAllCaps="false" />
+                android:textColor="#6c3aed"
+                android:padding="8dp"
+                android:background="#f0edff" />
 
-            <Button
-                android:id="@+id/btn_clear_log"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:background="#6b7280"
-                android:textColor="#ffffff"
-                android:text="Clear Log"
-                android:textSize="12sp"
-                android:textAllCaps="false" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_youtube" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="YouTube" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_test_dialer" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Dialer" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_settings" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="Settings" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_test_readscreen" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Read Screen" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_readsms" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="Read SMS" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_test_call" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Call" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_whatsapp" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="WhatsApp" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_test_uber" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Uber" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_sms" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="SMS" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_test_email" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Email" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/btn_test_all" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginEnd="4dp" android:text="Run All" android:textAllCaps="false" android:textSize="12sp" />
+                <Button android:id="@+id/btn_clear_log" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1" android:layout_marginStart="4dp" android:text="Clear" android:textAllCaps="false" android:textSize="12sp" />
+            </LinearLayout>
+            <TextView
+                android:id="@+id/harness_log"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="80dp"
+                android:layout_marginTop="12dp"
+                android:padding="12dp"
+                android:background="#1a1a2e"
+                android:textColor="#22c55e"
+                android:textSize="11sp"
+                android:typeface="monospace"
+                android:text="" />
+
+            <!-- BYOK AI keys card — one secure input per provider, validated on save.
+                 Keys are stored in the encrypted KeyVault (never plain prefs). -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="AI keys"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#6c3aed"
+                android:padding="8dp"
+                android:background="#f0edff" />
+
+            <TextView
+                android:id="@+id/ai_keys_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Stored encrypted on-device (Android Keystore). Never leaves your phone."
+                android:textSize="11sp"
+                android:textColor="#8a8a8e"
+                android:lineSpacingExtra="2dp" />
+
+            <LinearLayout
+                android:id="@+id/ai_keys_section"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
+
+            <!-- Accessibility verbosity dial (Labs) -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Speech level"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#6c3aed"
+                android:padding="8dp"
+                android:background="#f0edff" />
+
+            <LinearLayout
+                android:id="@+id/speech_level_section"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
 
         </LinearLayout>
-
-        <!-- Result Log -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="Harness Results:"
-            android:textSize="12sp"
-            android:textStyle="bold"
-            android:textColor="#3a3a3c" />
-
-        <TextView
-            android:id="@+id/harness_log"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="80dp"
-            android:padding="12dp"
-            android:background="#1a1a2e"
-            android:textColor="#22c55e"
-            android:textSize="11sp"
-            android:typeface="monospace"
-            android:text="[harness ready — tap a button to test RobotHand]"
-            android:lineSpacingExtra="2dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:layout_marginBottom="16dp"
-            android:text="Say: &quot;WhatsApp mom saying hello&quot; — &quot;Call dad&quot; — &quot;Book Uber to airport&quot;"
-            android:textSize="12sp"
-            android:textColor="#8a8a8e"
-            android:gravity="center"
-            android:paddingHorizontal="16dp" />
-
     </LinearLayout>
 </ScrollView>

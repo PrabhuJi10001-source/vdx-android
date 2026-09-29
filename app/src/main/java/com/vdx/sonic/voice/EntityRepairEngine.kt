@@ -28,10 +28,6 @@ class EntityRepairEngine(private val context: Context) {
 
         // Known app aliases — maps common mispronunciations to correct names
         private val APP_ALIASES = mapOf(
-            "whisper cloud" to "Wispr Flow",
-            "whisper flow" to "Wispr Flow",
-            "wisper flow" to "Wispr Flow",
-            "wispr" to "Wispr Flow",
             "over" to "Uber",
             "uber" to "Uber",
             "youber" to "Uber",

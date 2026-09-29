@@ -19,7 +19,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * SystemController — Louie parity for phone/system actions that can use
+ * SystemController — V1 capability for phone/system actions that can use
  * Android APIs directly (offline-capable where possible).
  */
 class SystemController(private val context: Context) {
@@ -155,15 +155,10 @@ class SystemController(private val context: Context) {
             return "Open dialer for $numberOrName"
         }
         val uri = Uri.parse("tel:${number.filter { it.isDigit() || it == '+' }}")
-        val canCall = ContextCompat.checkSelfPermission(context, android.Manifest.permission.CALL_PHONE) ==
-            PackageManager.PERMISSION_GRANTED
-        val intent = if (canCall) {
-            Intent(Intent.ACTION_CALL, uri)
-        } else {
-            Intent(Intent.ACTION_DIAL, uri)
-        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // First-release rule: ACTION_DIAL only (user taps Call). Never ACTION_CALL.
+        val intent = Intent(Intent.ACTION_DIAL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
-        return if (canCall) "Calling $number" else "Dialing $number"
+        return "Dialing $number"
     }
 
     private fun smsCompose(number: String, message: String): String {

@@ -3,13 +3,13 @@ package com.vdx.sonic.flows
 import com.vdx.sonic.*
 
 /**
- * LouieFlowCatalog — Louie-depth execution plans under Wispr interaction.
+ * FlowCatalog — full-depth execution plans under tap-to-talk.
  *
  * Each plan is step-by-step accessibility (or SystemAction) coverage matching
- * Louie Voice Control capability for that domain. User still controls when to
+ * V1 capability for that domain. User still controls when to
  * speak/click; we do not force continuous beep-menus.
  */
-object LouieFlowCatalog {
+object FlowCatalog {
 
     private fun idSeq(): () -> String {
         var i = 0
@@ -75,6 +75,17 @@ object LouieFlowCatalog {
                     ActionPrimitive.AskUser("Memory: ${intent.entities["value"] ?: intent.entities["key"] ?: intent.rawText}"),
                     "Memory ack"
                 )
+            )
+            IntentType.DRAFT_NOTE -> listOf(
+                ActionStep(
+                    next(),
+                    ActionPrimitive.AskUser("Draft note: ${intent.entities["body"] ?: intent.rawText}"),
+                    "Draft note ack"
+                )
+            )
+            IntentType.CANCEL -> listOf(
+                // Voice-flow abort — cancel the in-flight command. No action executes.
+                ActionStep(next(), ActionPrimitive.GoBack, "Cancel command")
             )
             IntentType.UNKNOWN -> listOf(
                 ActionStep(
@@ -177,7 +188,7 @@ object LouieFlowCatalog {
         }
     }
 
-    // ── WHATSAPP (Louie depth) ───────────────────────────────────
+    // ── WHATSAPP (full depth) ───────────────────────────────────
 
     private fun whatsAppFlow(intent: SonicIntent, next: () -> String): List<ActionStep> {
         val contact = intent.entities["contact"] ?: ""
@@ -212,7 +223,7 @@ object LouieFlowCatalog {
                 steps += ActionStep(
                     next(),
                     ActionPrimitive.AskUser("Chat open. Tap $action on screen, or speak the next detail."),
-                    "Louie-depth mid-chat action"
+                    "full-depth mid-chat action"
                 )
             }
             "send", "message", "open" -> {
@@ -228,7 +239,13 @@ object LouieFlowCatalog {
                         ActionPrimitive.WaitForUserConfirmation("Send to $contact?"),
                         "Confirm send (no auto-send)"
                     )
-                    // Do NOT click send — Wispr/Louie safety: user confirms
+                    steps += ActionStep(
+                        next(),
+                        ActionPrimitive.ClickNode(
+                            NodeSelector(contentDescription = "Send", isClickable = true)
+                        ),
+                        "Send"
+                    )
                 }
             }
             else -> steps += searchAndOpenChat(next, contact)
@@ -364,7 +381,7 @@ object LouieFlowCatalog {
                 steps += ActionStep(
                     next(),
                     ActionPrimitive.AskUser("Trip screen: tap $action, or say details after bubble tap."),
-                    "In-trip Louie action"
+                    "In-trip action"
                 )
             }
             else -> {

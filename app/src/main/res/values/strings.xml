@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">VDX</string>
     <string name="accessibility_description">VDX voice-first assistant. Executes voice intents through accessibility service.</string>
+    <string name="gesture_accessibility_description">VDX gesture service. Performs taps, swipes, and scrolls on behalf of the user.</string>
 </resources>

@@ -153,4 +153,48 @@ class VoiceInteractionHarnessTest {
         assertTrue(WakeWordDetector.containsActivation("please hey vision call mom"))
         assertFalse(WakeWordDetector.containsActivation("call mom"))
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // Cancel / abort routing (voice-flow abort)
+    // ──────────────────────────────────────────────────────────────
+
+    @Test
+    fun cancelUtterance_routesToCancelIntent() {
+        val cmd = simulateVoiceCommand("cancel")
+        assertEquals(IntentType.CANCEL, cmd.actionType)
+    }
+
+    @Test
+    fun neverMindUtterance_routesToCancelIntent() {
+        val cmd = simulateVoiceCommand("never mind")
+        assertEquals(IntentType.CANCEL, cmd.actionType)
+    }
+
+    @Test
+    fun stopUtterance_routesToCancelIntent() {
+        val cmd = simulateVoiceCommand("stop")
+        assertEquals(IntentType.CANCEL, cmd.actionType)
+    }
+
+    @Test
+    fun dismissUtterance_routesToCancelIntent() {
+        val cmd = simulateVoiceCommand("dismiss")
+        assertEquals(IntentType.CANCEL, cmd.actionType)
+    }
+
+    @Test
+    fun cancelRide_doesNotRouteToAbort_staysOnBookRide() {
+        // A longer command with "cancel" as a substring must NOT abort the flow;
+        // it is a ride-management command, not a voice-flow abort.
+        val cmd = simulateVoiceCommand("cancel my uber ride")
+        assertNotEquals(IntentType.CANCEL, cmd.actionType)
+        assertEquals(IntentType.BOOK_RIDE, cmd.actionType)
+    }
+
+    @Test
+    fun cancelUtterance_doesNotTriggerConfirmation() {
+        val cmd = simulateVoiceCommand("cancel")
+        assertFalse(cmd.intent.requiresConfirmation)
+        assertFalse(cmd.intent.clarificationNeeded)
+    }
 }

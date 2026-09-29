@@ -22,10 +22,28 @@ import java.net.URL
  */
 class CleanupEngine(
     private val apiKey: String = "",
-    private val baseUrl: String = "http://localhost:11434",
+    private val baseUrl: String = "",
     private val model: String = "qwen2.5:7b",
-    private val provider: String = "ollama" // ollama | groq | openai
+    private val provider: String = "none" // none | groq | openai | ollama
 ) {
+
+    /**
+     * True only when a real remote provider is configured. Defaults (none/local,
+     * blank URL, Ollama on localhost) never count — a phone has no local LLM
+     * server, and hitting loopback would stall every utterance for 20s.
+     */
+    fun hasConfiguredKey(): Boolean {
+        if (apiKey.isBlank()) return false
+        val p = provider.lowercase()
+        if (p == "none" || p == "local" || p == "off") return false
+        if (p == "ollama") {
+            val u = baseUrl.lowercase()
+            if (u.isBlank() || u.contains("localhost") || u.contains("127.0.0.1")) return false
+            return true
+        }
+        return true
+    }
+
     companion object {
         private const val TAG = "Sonic-Cleanup"
         private const val TIMEOUT_MS = 20_000
@@ -107,7 +125,7 @@ Output hygiene:
         }
 
         try {
-            // Always run local Wispr-style cleanup first (offline, instant)
+            // Always run local filler-stripping cleanup first (offline, instant)
             val local = LocalCleanupEngine.clean(transcript)
             val base = if (local.isNotBlank()) local else transcript
 
@@ -116,8 +134,8 @@ Output hygiene:
                     "ollama" -> callOllama(base, context)
                     "groq" -> callGroq(base, context)
                     "openai" -> callOpenAI(base, context)
-                    "local", "none" -> null
-                    else -> callOllama(base, context)
+                    "local", "none", "off" -> null
+                    else -> null
                 }
             } catch (_: Exception) {
                 null

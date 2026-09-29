@@ -4,7 +4,7 @@ import android.content.Context
 import com.vdx.sonic.AppAdapter
 import com.vdx.sonic.IntentType
 
-/** Resolves app adapters for Louie-depth planning. */
+/** Resolves app adapters for full-depth planning. */
 object AdapterRegistry {
     private val whatsApp = WhatsAppAdapter()
     private val uber = UberAdapter()

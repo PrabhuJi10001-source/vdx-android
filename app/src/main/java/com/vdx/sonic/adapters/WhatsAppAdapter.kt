@@ -34,7 +34,7 @@ class WhatsAppAdapter : GenericAdapter() {
         // WhatsApp's send button (paper plane icon)
         return screen.clickableElements.firstOrNull { el ->
             el.contentDescription?.contains("send", ignoreCase = true) == true ||
-            el.className.contains("ImageButton", ignoreCase = true)
+                el.text?.equals("send", ignoreCase = true) == true
         }
     }
 

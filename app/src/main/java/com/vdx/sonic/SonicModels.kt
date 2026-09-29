@@ -150,9 +150,14 @@ enum class IntentType {
     // Memory
     MEMORY_STORE,
     MEMORY_RECALL,
+    DRAFT_NOTE,
 
     // Fallback
-    UNKNOWN
+    UNKNOWN,
+    // Voice-flow abort (voice-flow abort): a pure abort utterance
+    // ("stop" / "never mind" / "cancel") that cancels the in-flight command before
+    // any action runs, instead of being parsed as a command substring.
+    CANCEL
 }
 
 data class SonicIntent(
@@ -193,6 +198,14 @@ sealed class ActionPrimitive {
     data class WaitForPackage(val packageName: String, val timeoutMs: Long = 8000) : ActionPrimitive()
     data class ReadUiState(val timeoutMs: Long = 2000) : ActionPrimitive()
     data class FindNode(val selector: NodeSelector) : ActionPrimitive()
+    /**
+     * Wait until a node matching [selector] appears in the accessibility tree,
+     * re-reading the screen each poll. Returns success once found, or a
+     * recoverable failure on timeout. Ported from common
+     * waitFor()/require() primitives — VDX previously only waited for a package,
+     * never for a specific element.
+     */
+    data class WaitForNode(val selector: NodeSelector, val timeoutMs: Long = 8000) : ActionPrimitive()
     data class FocusNode(val selector: NodeSelector) : ActionPrimitive()
     data class SetText(val selector: NodeSelector, val text: String) : ActionPrimitive()
     data class ClickNode(val selector: NodeSelector) : ActionPrimitive()
@@ -205,7 +218,7 @@ sealed class ActionPrimitive {
     data class DispatchGesture(val x: Float, val y: Float, val type: GestureType) : ActionPrimitive()
     object GoBack : ActionPrimitive()
     data class FailWithReason(val reason: String) : ActionPrimitive()
-    /** Direct Android system / intent actions (Louie system parity). */
+    /** Direct Android system / intent actions (V1 system parity). */
     data class SystemAction(val name: String, val params: Map<String, String> = emptyMap()) : ActionPrimitive()
 }
 
@@ -276,6 +289,41 @@ sealed class ExecutionResult {
     data class ConfirmationNeeded(val prompt: String, val plan: ExecutionPlan) : ExecutionResult()
     data class Failed(val reason: String, val step: String? = null, val recoverable: Boolean = false) : ExecutionResult()
     data class Cancelled(val reason: String = "User cancelled") : ExecutionResult()
+    /**
+     * A step failed and its downstream dependents were marked BLOCKED (not run).
+     * Failure-propagation:
+     * a failed node cascades to all downstream nodes as BLOCKED, so the plan
+     * stops cleanly instead of each dependent re-failing on its own.
+     */
+    data class Blocked(
+        val reason: String,
+        val failedStep: String? = null,
+        val blockedStepIds: List<String> = emptyList()
+    ) : ExecutionResult()
+    /**
+     * Action API returned success but the side effect could not be verified.
+     * This is the "honest uncertainty" result — VDX attempted the action but
+     * cannot confirm the outcome. The user must be told the truth: we tried
+     * but cannot confirm. This is NOT the same as Success.
+     *
+     * Use when:
+     * - App launched but we can't verify it's in foreground
+     * - Text inserted but we can't verify it's in the field
+     * - Click performed but we can't verify the UI changed
+     * - Any action where postcondition verification is unavailable
+     *
+     * Severity: between Success and Failed. The action MAY have succeeded,
+     * but we cannot confirm it. Never report "Done" for an Unverified result.
+     */
+    data class Unverified(
+        val message: String,
+        val reason: String,
+        val step: String? = null,
+        val traceId: String? = null
+    ) : ExecutionResult()
+
+    /** True only for verified Success. Unverified/Failed/Blocked are not "Done". */
+    fun isHonestSuccess(): Boolean = this is Success
 }
 
 // ──────────────────────────────────────────────────────────────────
