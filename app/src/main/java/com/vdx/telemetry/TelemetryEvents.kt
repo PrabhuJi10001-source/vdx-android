@@ -19,6 +19,7 @@ object TelemetryEventTypes {
     const val CONSENT_DENIED = "consent_denied"
     const val INTENT_PARSED = "intent_parsed"
     const val EXECUTION_RESULT = "execution_result"
+    const val EXEC_STEP = "exec_step"
     const val ENGINE_SELECTED = "engine_selected"
     const val KEY_ADDED = "key_added"
     const val VERBOSITY_CHANGED = "verbosity_changed"
@@ -26,7 +27,7 @@ object TelemetryEventTypes {
 
     /** All known event types. */
     val ALL: Set<String> = setOf(
-        INSTALL, CONSENT_GRANTED, CONSENT_DENIED, INTENT_PARSED, EXECUTION_RESULT,
+        INSTALL, CONSENT_GRANTED, CONSENT_DENIED, INTENT_PARSED, EXECUTION_RESULT, EXEC_STEP,
         ENGINE_SELECTED, KEY_ADDED, VERBOSITY_CHANGED, CRASH
     )
 }
@@ -52,6 +53,10 @@ object TelemetrySanitizer {
         TelemetryEventTypes.CONSENT_DENIED to emptySet(),
         TelemetryEventTypes.INTENT_PARSED to setOf("type"),
         TelemetryEventTypes.EXECUTION_RESULT to setOf("intent_type", "status", "duration_ms"),
+        TelemetryEventTypes.EXEC_STEP to setOf(
+            "intent_type", "step_index", "primitive", "app_package",
+            "attempt", "status", "duration_ms"
+        ),
         TelemetryEventTypes.ENGINE_SELECTED to setOf("asr", "llm", "key"),
         TelemetryEventTypes.KEY_ADDED to setOf("provider", "valid"),
         TelemetryEventTypes.VERBOSITY_CHANGED to setOf("level"),
@@ -116,6 +121,11 @@ object TelemetrySanitizer {
         return when (key) {
             "type", "intent_type" -> v is String && v.isNotBlank() &&
                 v.all { it.isLetterOrDigit() || it == '_' }
+            "primitive" -> v is String && v.isNotBlank() &&
+                v.all { it.isLetterOrDigit() || it == '_' }
+            "app_package" -> v is String && v.isNotBlank() &&
+                v.all { it.isLetterOrDigit() || it == '_' || it == '.' }
+            "step_index", "attempt" -> v is Number && v.toInt() >= 0
             "status" -> v is String && v.lowercase() in STATUS_VALUES
             "asr" -> v is String && v.lowercase() in ASR_VALUES
             "llm" -> v is String && v.lowercase() in LLM_VALUES

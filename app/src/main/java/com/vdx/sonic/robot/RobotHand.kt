@@ -86,6 +86,24 @@ class RobotHand(
         else -> "fail" // ClarificationNeeded / ConfirmationNeeded are not completed executions
     }
 
+    /** Coarse status for a single step (same enum as plan-level status). */
+    private fun stepStatusOf(result: ExecutionResult): String = statusOf(result)
+
+    /** D4: coarse primitive label (allowlist-safe: enum names only, no free text). */
+    private fun ActionPrimitive.primitiveName(): String =
+        this::class.simpleName?.takeIf { n -> n.all { it.isLetterOrDigit() || it == '_' } } ?: "PRIMITIVE"
+
+    /** D4: the package a step targets, when expressible as an allowlisted package string. */
+    private fun planStepPackage(step: ActionStep): String? {
+        val raw = when (val a = step.action) {
+            is ActionPrimitive.OpenApp -> a.packageName
+            is ActionPrimitive.WaitForPackage -> a.packageName
+            else -> null
+        } ?: return null
+        // allowlist-validated: lowercase letters/digits/dots only (blocks content leaks)
+        return raw.takeIf { p -> p.all { it.isLetterOrDigit() || it == '.' } }?.lowercase()
+    }
+
     private suspend fun executeInternal(plan: ExecutionPlan): ExecutionResult {
         currentStepIndex = 0
         // a11y is OPTIONAL at the plan level. Opening an app uses the launcher
@@ -104,7 +122,23 @@ class RobotHand(
             // STEP-BY-STEP band (7-8): announce what we're about to do as it executes.
             announceStep(step.description)
 
+            val stepStart = SystemClock.elapsedRealtime()
             val result = executeStep(step, plan, a11y)
+
+            // D4 fix (PR-1): per-step telemetry — outcomes become countable/locatable.
+            Telemetry.log(
+                TelemetryEventTypes.EXEC_STEP,
+                mapOf(
+                    "intent_type" to TelemetrySanitizerLabel(plan.intent),
+                    "step_index" to i,
+                    "primitive" to step.action.primitiveName(),
+                    "app_package" to (planStepPackage(step) ?: "none"),
+                    "attempt" to 0,
+                    "status" to stepStatusOf(result),
+                    "duration_ms" to (SystemClock.elapsedRealtime() - stepStart)
+                )
+            )
+
             if (result is ExecutionResult.Failed) {
                 // Failure cascade (failure cascade): a failed step
                 // blocks all downstream steps. For a linear plan, downstream = every
@@ -122,8 +156,24 @@ class RobotHand(
                 return result
             }
 
-            // Postcondition delay — use coroutine delay, not Thread.sleep
-            if (step.expectedPostcondition != null) {
+            // D3 fix: wait-for-CONDITION, not fixed-time. If the NEXT step targets a
+            // selector, poll for it (deadline = that step's timeoutMs); fall back to a
+            // short settle delay only for selector-less (pure gesture) transitions.
+            val nextStep = plan.steps.getOrNull(i + 1)
+            val nextSelector: com.vdx.sonic.NodeSelector? = when (val a = nextStep?.action) {
+                is ActionPrimitive.ClickNode -> a.selector
+                is ActionPrimitive.LongClickNode -> a.selector
+                is ActionPrimitive.SetText -> a.selector
+                is ActionPrimitive.FocusNode -> a.selector
+                is ActionPrimitive.FindNode -> a.selector
+                is ActionPrimitive.WaitForNode -> a.selector
+                is ActionPrimitive.ReadVisibleResult -> a.selector
+                is ActionPrimitive.ScrollContainer -> a.selector
+                else -> null
+            }
+            if (a11y != null && nextSelector != null) {
+                harness.waitForNode(a11y, nextSelector, nextStep?.timeoutMs ?: 5000L)
+            } else if (step.expectedPostcondition != null) {
                 delay(STEP_DELAY_MS)
             }
         }
@@ -599,6 +649,10 @@ class RobotHand(
     }
 
     private fun matches(el: UiElement, sel: NodeSelector): Boolean {
+        // D1 fix: resourceId now matches the element's REAL viewIdResourceName
+        // (was silently compared against nothing in this copy). Shared viewId law
+        // with Harness.viewIdMatches: exact or ':id/'-suffix, case-insensitive.
+        if (sel.resourceId != null && !viewIdMatches(el.viewId, sel.resourceId)) return false
         if (sel.text != null && !el.text.equals(sel.text, ignoreCase = true) &&
             !(el.text?.contains(sel.text, ignoreCase = true) == true)) return false
         if (sel.contentDescription != null && !el.contentDescription.equals(sel.contentDescription, ignoreCase = true) &&
@@ -610,6 +664,16 @@ class RobotHand(
         if (sel.isClickable != null && el.isClickable != sel.isClickable) return false
         if (sel.isFocused != null && el.isFocused != sel.isFocused) return false
         return true
+    }
+
+    /** D1: viewId comparison law — exact equality or ':id/'-suffix match, case-insensitive. */
+    private fun viewIdMatches(actualViewId: String?, selectorId: String): Boolean {
+        if (actualViewId.isNullOrBlank()) return false
+        val want = selectorId.trim()
+        if (actualViewId.equals(want, ignoreCase = true)) return true
+        val shortWant = want.substringAfterLast(":id/", want)
+        val actualShort = actualViewId.substringAfterLast(":id/", actualViewId)
+        return actualShort.equals(shortWant, ignoreCase = true)
     }
 
     private fun findAccessibilityNode(a11y: AccessibilityService?, target: UiElement): AccessibilityNodeInfo? {

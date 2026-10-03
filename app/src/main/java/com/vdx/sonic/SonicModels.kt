@@ -257,6 +257,8 @@ data class ScreenModel(
 
 data class UiElement(
     val ref: String,
+    /** Stable Android anchor: viewIdResourceName. Survives locale/app-version changes. */
+    val viewId: String? = null,
     val text: String? = null,
     val contentDescription: String? = null,
     val hint: String? = null,
