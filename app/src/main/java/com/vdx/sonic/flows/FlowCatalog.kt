@@ -205,7 +205,7 @@ object FlowCatalog {
                 steps += searchAndOpenChat(next, contact)
                 steps += ActionStep(
                     next(),
-                    ActionPrimitive.ClickNode(NodeSelector(contentDescription = "Voice call", isClickable = true)),
+                    ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/voice_call_button", contentDescription = "Voice call", isClickable = true)),
                     "Voice call"
                 )
                 steps += ActionStep(next(), ActionPrimitive.WaitForUserConfirmation("Place WhatsApp call to $contact?"), "Confirm")
@@ -214,7 +214,7 @@ object FlowCatalog {
                 steps += searchAndOpenChat(next, contact)
                 steps += ActionStep(
                     next(),
-                    ActionPrimitive.ClickNode(NodeSelector(contentDescription = "Video call", isClickable = true)),
+                    ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/video_call_button", contentDescription = "Video call", isClickable = true)),
                     "Video call"
                 )
             }
@@ -231,7 +231,7 @@ object FlowCatalog {
                 if (message.isNotBlank()) {
                     steps += ActionStep(
                         next(),
-                        ActionPrimitive.SetText(NodeSelector(hint = "Message", isEditable = true), message),
+                        ActionPrimitive.SetText(NodeSelector(resourceId = "com.whatsapp:id/entry", hint = "Message", isEditable = true), message),
                         "Type message"
                     )
                     steps += ActionStep(
@@ -242,7 +242,7 @@ object FlowCatalog {
                     steps += ActionStep(
                         next(),
                         ActionPrimitive.ClickNode(
-                            NodeSelector(contentDescription = "Send", isClickable = true)
+                            NodeSelector(resourceId = "com.whatsapp:id/send", contentDescription = "Send", isClickable = true)
                         ),
                         "Send"
                     )
@@ -256,18 +256,18 @@ object FlowCatalog {
     private fun searchAndOpenChat(next: () -> String, contact: String): List<ActionStep> = listOf(
         ActionStep(
             next(),
-            ActionPrimitive.ClickNode(NodeSelector(contentDescription = "Search", isClickable = true)),
+            ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/menuitem_search", contentDescription = "Search", isClickable = true)),
             "Open search"
         ),
         ActionStep(
             next(),
-            ActionPrimitive.SetText(NodeSelector(hint = "Search", isEditable = true), contact),
+            ActionPrimitive.SetText(NodeSelector(resourceId = "com.whatsapp:id/search_src_text", hint = "Search", isEditable = true), contact),
             "Search $contact"
         ),
         ActionStep(next(), ActionPrimitive.WaitForPackage("com.whatsapp", 2500), "Wait results"),
         ActionStep(
             next(),
-            ActionPrimitive.ClickNode(NodeSelector(text = contact, isClickable = true)),
+            ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/conversation_row", text = contact, isClickable = true)),
             "Open chat"
         ),
         ActionStep(next(), ActionPrimitive.WaitForPackage("com.whatsapp", 2000), "Wait chat")

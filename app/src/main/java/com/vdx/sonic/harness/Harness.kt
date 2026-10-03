@@ -120,6 +120,9 @@ class Harness {
      * AND-match a node against all non-null selector fields.
      */
     private fun matchesAll(el: UiElement, sel: NodeSelector): Boolean {
+        // D1 fix: resourceId compares against the element's REAL viewIdResourceName —
+        // previously compared against el.packageName, which could never match a real id.
+        if (sel.resourceId != null && !viewIdMatches(el.viewId, sel.resourceId)) return false
         if (sel.text != null && !el.text.equals(sel.text, ignoreCase = true) &&
             !(el.text?.contains(sel.text, ignoreCase = true) == true)) return false
         if (sel.contentDescription != null && !el.contentDescription.equals(sel.contentDescription, ignoreCase = true) &&
@@ -127,11 +130,24 @@ class Harness {
         if (sel.hint != null && !el.hint.equals(sel.hint, ignoreCase = true) &&
             !(el.hint?.contains(sel.hint, ignoreCase = true) == true)) return false
         if (sel.className != null && !el.className.contains(sel.className, ignoreCase = true)) return false
-        if (sel.resourceId != null && !el.packageName.contains(sel.resourceId, ignoreCase = true)) return false
         if (sel.isEditable != null && el.isEditable != sel.isEditable) return false
         if (sel.isClickable != null && el.isClickable != sel.isClickable) return false
         if (sel.isFocused != null && el.isFocused != sel.isFocused) return false
         return true
+    }
+
+    /**
+     * D1 fix: accept both short ids ("send_button", "com.whatsapp:id/send_button")
+     * and full ids. Comparison is case-insensitive; matches on exact equality or
+     * suffix containment after the ':id/' separator.
+     */
+    private fun viewIdMatches(actualViewId: String?, selectorId: String): Boolean {
+        if (actualViewId.isNullOrBlank()) return false
+        val want = selectorId.trim()
+        if (actualViewId.equals(want, ignoreCase = true)) return true
+        val shortWant = want.substringAfterLast(":id/", want)
+        val actualShort = actualViewId.substringAfterLast(":id/", actualViewId)
+        return actualShort.equals(shortWant, ignoreCase = true)
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -181,6 +197,7 @@ class Harness {
         val text = safeText(node)
         val contentDesc = safeContentDescription(node)
         val hint = safeHint(node)
+        val viewId = safeViewId(node)
         val isClickable = node.isClickable
         val isEditable = node.isEditable || isEditTextClass(node)
         val isFocused = node.isFocused
@@ -204,6 +221,7 @@ class Harness {
 
         val element = UiElement(
             ref = ref,
+            viewId = viewId,
             text = text,
             contentDescription = contentDesc,
             hint = hint,
@@ -247,6 +265,10 @@ class Harness {
 
     private fun safeHint(node: AccessibilityNodeInfo): String? = try {
         node.hintText?.toString()
+    } catch (e: Exception) { null }
+
+    private fun safeViewId(node: AccessibilityNodeInfo): String? = try {
+        node.viewIdResourceName?.toString()
     } catch (e: Exception) { null }
 
     private fun safeClassName(node: AccessibilityNodeInfo): String = try {
