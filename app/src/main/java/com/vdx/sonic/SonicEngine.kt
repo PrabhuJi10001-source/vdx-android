@@ -413,6 +413,67 @@ class SonicEngine(
         }
     }
 
+
+    /**
+     * Demo/external-driver path: run one phrase through the SAME production gates
+     * (cleanup → repair → parseSmart → cancel-gate → IR-gate → voice-safe gate →
+     * clarification → plan → execute) and RETURN the ExecutionResult, with an
+     * optional per-step callback for evidence display. This is the function an
+     * Alexa relay / demo driver calls; processText wraps it for the bubble.
+     */
+    suspend fun submitTaskForResult(
+        text: String,
+        onStep: (suspend (Int, String, String) -> Unit)? = null
+    ): ExecutionResult {
+        val cleaned = cleanup(text)
+
+        val earlyIntent = intentParser.parse(cleaned)
+        if (earlyIntent.type == IntentType.DRAFT_NOTE) {
+            return routeDraftNoteResult(earlyIntent)
+        }
+
+        val screenModel = harness.readScreen(getAccessibilityService())
+        val repairResult = entityRepair.repair(
+            transcript = cleaned,
+            screenModel = screenModel,
+            vocabulary = getVocabulary(),
+            contacts = getContacts()
+        )
+        val intent = intentParser.parseSmart(repairResult.repairedText)
+        if (handleCancel(intent)) {
+            return ExecutionResult.Cancelled("Cancelled before execution")
+        }
+        if (gateUnresolvedIr(intent)) {
+            return ExecutionResult.ClarificationNeeded(
+                "Which one — ${com.vdx.sonic.intentir.IntentIrV1.firstUnresolvedSurface(intent)}?", intent
+            )
+        }
+        val gated = com.vdx.sonic.executor.VoiceSafeActions.enforce(intent)
+            ?: return ExecutionResult.ClarificationNeeded(
+                PromptTemplate.render(PromptTemplate.CANT_DO_BY_VOICE), intent
+            )
+        clarification.evaluate(gated, repairResult)?.let { req ->
+            return ExecutionResult.ClarificationNeeded(req.question, gated)
+        }
+        val plan = planner.plan(intent, screenModel, harness)
+        val result = sonicRobot.executeWithStepFeed(plan, onStep)
+        memoryStore.recordEpisode(
+            goal = intent.rawText,
+            action = intent.type.name.lowercase(),
+            target = intent.entities.values.firstOrNull().orEmpty(),
+            outcome = if (result.isHonestSuccess()) "success" else "failure",
+            errorDetail = (result as? ExecutionResult.Failed)?.reason
+                ?: (result as? ExecutionResult.Blocked)?.reason.orEmpty()
+        )
+        return result
+    }
+
+    /** Non-suspend wrapper for broadcast/demo callers that just fire-and-collect. */
+    fun submitTaskForDemo(
+        text: String,
+        onStep: (suspend (Int, String, String) -> Unit)? = null
+    ): ExecutionResult = kotlinx.coroutines.runBlocking { submitTaskForResult(text, onStep) }
+
     /**
      * Route a DRAFT_NOTE intent to the Memory-to-Action slice: propose → confirm.
      * Shared by all entry points so the screen/accessibility is never required.
@@ -437,6 +498,21 @@ class SonicEngine(
             )
         )
     }
+
+
+    /** Result-returning draft-note route for the demo/external driver (same behavior, honest answer). */
+    private suspend fun routeDraftNoteResult(intent: SonicIntent): ExecutionResult {
+        routeDraftNote(intent)
+        return ExecutionResult.ClarificationNeeded(
+            promptTemplateNoteConfirm(intent), intent
+        )
+    }
+
+    private fun promptTemplateNoteConfirm(intent: SonicIntent): String =
+        PromptTemplate.render(
+            PromptTemplate.NOTE_CONFIRM,
+            mapOf("body" to (intent.entities["body"] ?: intent.rawText))
+        )
 
     /**
      * Process text from Google SpeechRecognizer through the full Sonic pipeline
