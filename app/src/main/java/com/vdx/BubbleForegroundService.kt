@@ -440,10 +440,12 @@ class BubbleForegroundService : Service() {
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // ISSUE 1(a): 64dp x 64dp (was 56dp x 80dp)
-        // ISSUE 1(d): 64dp > 48dp minimum tap target
-        val bubbleSize = dpToPx(80)
-        val haloSize = dpToPx(96)   // ISSUE 1(c): larger halo behind bubble
+        // CODY'S DIRECTIVE (2026-10-06): emulate WisprFlow's dimensions + transparency.
+        // Old: 80dp blocky pill + 96dp halo — read as a 'persistent square' on real phones.
+        // New: compact 44dp circle (still ≥48px tap-target) + whisper-thin 52dp halo
+        // + slight window translucency (0.92) — like Wispr Flow's unobtrusive pill.
+        val bubbleSize = dpToPx(44)
+        val haloSize = dpToPx(52)
         val x = dpToPx(16)
         val y = dpToPx(120)
         bubbleX = x
@@ -453,7 +455,7 @@ class BubbleForegroundService : Service() {
         val halo = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(40, 108, 58, 237))
+                setColor(Color.argb(18, 108, 58, 237))
             }
         }
         haloView = halo
@@ -511,6 +513,7 @@ class BubbleForegroundService : Service() {
             gravity = Gravity.TOP or Gravity.START
             this.x = x
             this.y = y
+            alpha = 0.92f   // WisprFlow-style slight translucency
         }
         bubbleParams = params
 
