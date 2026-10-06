@@ -616,12 +616,18 @@ class BubbleForegroundService : Service() {
 
     private fun applyPillBackground(view: View, state: BubbleState) {
         val (startColor, endColor) = stateColors(state)
-        val cornerRadius = dpToPx(28).toFloat()
+        // PHONE-TEST FIX (real-device round): the bubble must be a CIRCLE.
+        // cornerRadius was fixed at 28dp on an 80dp square box → visibly square
+        // (Aman's 'persistent square' + the 83s recording). Radius = half the
+        // view's width → perfect circle at any size. View width is used instead
+        // of the constant so future sizes stay circular.
+        val w = view.width
+        val radius = ((if (w > 0) w else dpToPx(80)) / 2f).toFloat()
 
         val drawable = GradientDrawable().apply {
             orientation = GradientDrawable.Orientation.LEFT_RIGHT
             colors = intArrayOf(startColor, endColor)
-            this.cornerRadius = cornerRadius
+            this.cornerRadius = radius
             setStroke(dpToPx(2), Color.argb(80, 255, 255, 255))
         }
         view.background = drawable
