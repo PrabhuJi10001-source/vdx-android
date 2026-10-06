@@ -446,8 +446,10 @@ class BubbleForegroundService : Service() {
         // + slight window translucency (0.92) — like Wispr Flow's unobtrusive pill.
         val bubbleSize = dpToPx(44)
         val haloSize = dpToPx(52)
-        val x = dpToPx(16)
-        val y = dpToPx(120)
+        // WisprFlow dock: lower-right edge (thumb zone); vertical center-ish of lower third
+        val dm = resources.displayMetrics
+        val x = dpToPx(14)
+        val y = Math.max(dpToPx(60), (dm.heightPixels * 0.62f).toInt())
         bubbleX = x
         bubbleY = y
 
@@ -455,7 +457,7 @@ class BubbleForegroundService : Service() {
         val halo = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(18, 108, 58, 237))
+                setColor(Color.argb(12, 108, 58, 237))
             }
         }
         haloView = halo
@@ -513,7 +515,7 @@ class BubbleForegroundService : Service() {
             gravity = Gravity.TOP or Gravity.START
             this.x = x
             this.y = y
-            alpha = 0.92f   // WisprFlow-style slight translucency
+            alpha = 0.86f   // WisprFlow-style translucency (glassy, readable)
         }
         bubbleParams = params
 
@@ -631,7 +633,8 @@ class BubbleForegroundService : Service() {
             orientation = GradientDrawable.Orientation.LEFT_RIGHT
             colors = intArrayOf(startColor, endColor)
             this.cornerRadius = radius
-            setStroke(dpToPx(2), Color.argb(80, 255, 255, 255))
+            // WisprFlow-style soft edge: no hard stroke; glassy edge via subtle lighter halo ring instead
+            setStroke(dpToPx(1), Color.argb(36, 255, 255, 255))
         }
         view.background = drawable
     }
