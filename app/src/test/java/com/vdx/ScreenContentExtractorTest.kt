@@ -137,6 +137,31 @@ class ScreenContentExtractorTest {
     }
 
     @Test
+    fun extract_passwordField_isAMeasurement_notTheSecret() {
+        val root = AccessibilityNodeInfo.obtain()
+        root.packageName = "com.example.bank"
+        root.className = "android.widget.FrameLayout"
+
+        val secret = AccessibilityNodeInfo.obtain()
+        secret.text = "correct-horse"
+        secret.contentDescription = "correct-horse"
+        secret.className = "android.widget.EditText"
+        secret.isEditable = true
+        secret.isPassword = true
+        secret.setBoundsInScreen(Rect(0, 0, 100, 40))
+        shadowOf(root).addChild(secret)
+
+        val snapshot = extractor.extract(root)
+        val json = extractor.toJson(snapshot)
+
+        assertFalse(json.contains("correct-horse"))
+        val field = snapshot.elements.first { it.isPassword }
+        assertEquals("", field.text)
+        assertEquals("", field.contentDescription)
+        assertTrue(field.isEditable)
+    }
+
+    @Test
     fun extract_nullRoot_returnsEmptySnapshot() {
         val snapshot = extractor.extract(null)
         assertEquals(0, snapshot.elementCount)

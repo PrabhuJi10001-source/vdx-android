@@ -57,7 +57,9 @@ class McpToolRegistry(
      * (the registry scope is Dispatchers.IO).
      */
     private suspend fun runTool(invocation: Invocation): ExecutionResult {
-        val plan = buildPlan(invocation) ?: return ExecutionResult.Failed("Unknown tool: ${invocation.name}")
+        val plan = buildPlan(invocation) ?: return ExecutionResult.Failed(
+            "Unknown tool: ${invocation.name}. Call one of: tap, swipe, type, click, long_click, scroll, open_app, go_back, home, notifications, recents, read_screen, screenshot."
+        )
         return robotHand.execute(plan)
     }
 

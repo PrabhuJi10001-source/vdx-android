@@ -160,8 +160,9 @@ class ScreenContentExtractor {
     ) {
         if (depth > MAX_DEPTH || visited.incrementAndGet() > MAX_NODES) return
 
-        val text = nodeText(node)
-        val contentDescription = node.contentDescription?.toString() ?: ""
+        val secret = isSecretNode(node)
+        val text = if (secret) "" else nodeText(node)
+        val contentDescription = if (secret) "" else (node.contentDescription?.toString() ?: "")
         val isClickable = node.isClickable
         val isScrollable = node.isScrollable
         val isEditable = isEditableNode(node)
@@ -183,7 +184,8 @@ class ScreenContentExtractor {
                     isScrollable = isScrollable,
                     isEditable = isEditable,
                     isFocused = isFocused,
-                    bounds = rect
+                    bounds = rect,
+                    isPassword = secret
                 )
             )
         }
@@ -231,6 +233,7 @@ class ScreenContentExtractor {
             .put("isScrollable", element.isScrollable)
             .put("isEditable", element.isEditable)
             .put("isFocused", element.isFocused)
+            .put("isPassword", element.isPassword)
             .put("bounds", element.bounds.flattenToString())
     }
 
@@ -238,8 +241,17 @@ class ScreenContentExtractor {
     // Utilities
     // ──────────────────────────────────────────────────────────────────────
 
+    /**
+     * Password and similar secret fields are measurements, not payloads.
+     * The agent may learn that a secret field exists. It must not learn the characters.
+     */
+    private fun isSecretNode(node: AccessibilityNodeInfo): Boolean {
+        return try { node.isPassword } catch (e: Exception) { false }
+    }
+
     /** Best textual representation of a node: text → contentDescription → hint. */
     private fun nodeText(node: AccessibilityNodeInfo): String {
+        if (isSecretNode(node)) return ""
         return node.text?.toString()
             ?: node.contentDescription?.toString()
             ?: node.hintText?.toString()
@@ -267,7 +279,8 @@ class ScreenContentExtractor {
         val isScrollable: Boolean,
         val isEditable: Boolean,
         val isFocused: Boolean,
-        val bounds: Rect
+        val bounds: Rect,
+        val isPassword: Boolean = false
     )
 
     /** Structured representation of the current screen. */
