@@ -255,6 +255,7 @@ class SonicEngine(
                     )
                     return@launch
                 }
+                if (blockedByInstallation(gated)) return@launch
                 val clarificationRequest = clarification.evaluate(gated, repairResult)
                 if (clarificationRequest != null) {
                     onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
@@ -351,6 +352,24 @@ class SonicEngine(
         return true
     }
 
+    /**
+     * A projected capability that fails the local intersection does not reach
+     * execution. Unprojected intents stay on the existing path.
+     */
+    private fun blockedByInstallation(gated: com.vdx.sonic.SonicIntent): Boolean {
+        val decision = com.vdx.capability.InstallationPlane.blockIfProjected(gated.type) ?: return false
+        onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
+        onClarification?.invoke(
+            ClarificationRequest(
+                id = java.util.UUID.randomUUID().toString(),
+                question = decision.userMessage(),
+                type = ClarificationType.ACTION_CONFIRMATION,
+                context = gated
+            )
+        )
+        return true
+    }
+
     /** Process typed/transcript text through cleanup → repair → plan → execute (no ASR). */
     fun processText(text: String) {
         currentJob?.cancel()
@@ -392,6 +411,7 @@ class SonicEngine(
                     )
                     return@launch
                 }
+                if (blockedByInstallation(gated)) return@launch
                 val clarificationRequest = clarification.evaluate(gated, repairResult)
                 if (clarificationRequest != null) {
                     onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
@@ -581,6 +601,7 @@ class SonicEngine(
                     )
                     return@launch
                 }
+                if (blockedByInstallation(gated)) return@launch
                 val clarificationRequest = clarification.evaluate(gated, repairResult)
                 if (clarificationRequest != null) {
                     onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
