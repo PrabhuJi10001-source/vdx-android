@@ -197,6 +197,20 @@ class MainActivity : AppCompatActivity() {
             harnessLog.text = ""
         }
 
+        // Crash-catcher readback (2026-10-18): if the app recorded a crash on this
+        // device (e.g. "2nd accessibility crash" from a maker with no logcat), show
+        // it in the labs log so it can be shared as plain text WITHOUT adb.
+        try {
+            val crashFile = java.io.File(java.io.File(filesDir, "diagnostics"), "last_crash.log")
+            if (crashFile.isFile && crashFile.length() > 0) {
+                val existing = harnessLog.text.toString()
+                val tail = crashFile.readText().takeLast(800)
+                harnessLog.text = "⚠ LAST RECORDED CRASH (on-device log):\n$tail\n\n${existing}"
+            }
+        } catch (_: Exception) {
+            // never block startup on diagnostics readback
+        }
+
         findViewById<View>(R.id.title_vdx).setOnLongClickListener {
             val labs = findViewById<View>(R.id.labs_section)
             labs.visibility = if (labs.visibility == View.VISIBLE) View.GONE else View.VISIBLE
