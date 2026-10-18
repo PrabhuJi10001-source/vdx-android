@@ -457,7 +457,7 @@ class BubbleForegroundService : Service() {
         val halo = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(12, 108, 58, 237))
+                setColor(Color.argb(14, 139, 92, 246))
             }
         }
         haloView = halo
@@ -621,20 +621,18 @@ class BubbleForegroundService : Service() {
 
     private fun applyPillBackground(view: View, state: BubbleState) {
         val (startColor, endColor) = stateColors(state)
-        // PHONE-TEST FIX (real-device round): the bubble must be a CIRCLE.
-        // cornerRadius was fixed at 28dp on an 80dp square box → visibly square
-        // (Aman's 'persistent square' + the 83s recording). Radius = half the
-        // view's width → perfect circle at any size. View width is used instead
-        // of the constant so future sizes stay circular.
-        val w = view.width
-        val radius = ((if (w > 0) w else dpToPx(80)) / 2f).toFloat()
-
+        // USER DIRECTIVE (2026-10-18): the floater must be a plain CIRCLE, never a
+        // square/hexagon/oval-reading pill, and the old violet flat color was too
+        // dull. Enforced with shape=OVAL (not corner radius trickery): one immutable
+        // geometric guarantee — an OVAL on a 44×44dp view IS a circle at every size
+        // and every state, even when width measurement hasn't landed yet.
         val drawable = GradientDrawable().apply {
-            orientation = GradientDrawable.Orientation.LEFT_RIGHT
+            shape = GradientDrawable.OVAL
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = (view.width.takeIf { it > 0 } ?: dpToPx(44)) * 0.75f
+            orientation = GradientDrawable.Orientation.TL_BR
             colors = intArrayOf(startColor, endColor)
-            this.cornerRadius = radius
-            // WisprFlow-style soft edge: no hard stroke; glassy edge via subtle lighter halo ring instead
-            setStroke(dpToPx(1), Color.argb(36, 255, 255, 255))
+            setStroke(dpToPx(1), Color.argb(46, 255, 255, 255)) // soft glassy rim
         }
         view.background = drawable
     }
@@ -642,15 +640,16 @@ class BubbleForegroundService : Service() {
     /** ISSUE 1(c): Apply translucent halo color matching the current state */
     private fun applyHaloBackground(view: View, state: BubbleState) {
         val color = when (state) {
-            BubbleState.IDLE      -> Color.argb(40, 108, 58, 237)
-            BubbleState.LISTENING -> Color.argb(60, 34, 197, 94)
-            BubbleState.THINKING  -> Color.argb(50, 245, 158, 11)
-            BubbleState.EXECUTING -> Color.argb(50, 59, 130, 246)
-            BubbleState.SPEAKING  -> Color.argb(50, 59, 130, 246)
-            BubbleState.ERROR     -> Color.argb(60, 239, 68, 68)
-            BubbleState.CLARIFICATION_REQUIRED -> Color.argb(50, 245, 158, 11)
-            BubbleState.DONE      -> Color.argb(50, 34, 197, 94)
-            BubbleState.BLOCKED_PERMISSION -> Color.argb(60, 239, 68, 68)
+            // Halo tints follow the new palette (violet base, gold listening)
+            BubbleState.IDLE      -> Color.argb(44, 139, 92, 246)
+            BubbleState.LISTENING -> Color.argb(64, 255, 214, 107)
+            BubbleState.THINKING  -> Color.argb(52, 245, 158, 11)
+            BubbleState.EXECUTING -> Color.argb(52, 56, 189, 248)
+            BubbleState.SPEAKING  -> Color.argb(52, 125, 211, 252)
+            BubbleState.ERROR     -> Color.argb(64, 248, 113, 113)
+            BubbleState.CLARIFICATION_REQUIRED -> Color.argb(52, 251, 191, 36)
+            BubbleState.DONE      -> Color.argb(52, 74, 222, 128)
+            BubbleState.BLOCKED_PERMISSION -> Color.argb(64, 247, 85, 85)
         }
         view.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
@@ -659,16 +658,19 @@ class BubbleForegroundService : Service() {
     }
 
     private fun stateColors(state: BubbleState): Pair<Int, Int> {
+        // USER DIRECTIVE (2026-10-18): livelier palette, aligned with the Vedaxi orb
+        // language (violet #8B5CF6 base, gold #FFD66B accents) instead of the flat
+        // #6c3aed blob. Each state stays ONE visual language: violet + its accent.
         return when (state) {
-            BubbleState.IDLE      -> Color.parseColor("#6c3aed") to Color.parseColor("#5b2fd9")
-            BubbleState.LISTENING -> Color.parseColor("#22c55e") to Color.parseColor("#16a34a")
-            BubbleState.THINKING  -> Color.parseColor("#f59e0b") to Color.parseColor("#d97706")
-            BubbleState.EXECUTING -> Color.parseColor("#3b82f6") to Color.parseColor("#2563eb")
-            BubbleState.SPEAKING  -> Color.parseColor("#3b82f6") to Color.parseColor("#2563eb")
-            BubbleState.ERROR     -> Color.parseColor("#ef4444") to Color.parseColor("#f59e0b")
-            BubbleState.CLARIFICATION_REQUIRED -> Color.parseColor("#f59e0b") to Color.parseColor("#d97706")
-            BubbleState.DONE      -> Color.parseColor("#22c55e") to Color.parseColor("#16a34a")
-            BubbleState.BLOCKED_PERMISSION -> Color.parseColor("#ef4444") to Color.parseColor("#dc2626")
+            BubbleState.IDLE                    -> Color.parseColor("#8B5CF6") to Color.parseColor("#6D28D9")
+            BubbleState.LISTENING               -> Color.parseColor("#FFD66B") to Color.parseColor("#F59E0B")
+            BubbleState.THINKING                -> Color.parseColor("#F59E0B") to Color.parseColor("#D97706")
+            BubbleState.EXECUTING               -> Color.parseColor("#38BDF8") to Color.parseColor("#2563EB")
+            BubbleState.SPEAKING                -> Color.parseColor("#7DD3FC") to Color.parseColor("#0EA5E9")
+            BubbleState.ERROR                   -> Color.parseColor("#F87171") to Color.parseColor("#DC2626")
+            BubbleState.CLARIFICATION_REQUIRED  -> Color.parseColor("#FBBF24") to Color.parseColor("#D97706")
+            BubbleState.DONE                    -> Color.parseColor("#4ADE80") to Color.parseColor("#16A34A")
+            BubbleState.BLOCKED_PERMISSION      -> Color.parseColor("#F75555") to Color.parseColor("#B91C1C")
         }
     }
 
