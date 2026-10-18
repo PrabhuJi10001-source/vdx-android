@@ -79,47 +79,79 @@ class VdxAccessibilityService : AccessibilityService(), CoroutineScope {
         super.onServiceConnected()
         instance = this
         isRunning = true
-        screenExtractor = ScreenContentExtractor()
+        screenExtractor = try {
+            ScreenContentExtractor()
+        } catch (e: Exception) {
+            Log.e(TAG, "extractor init failed — continuing without cache", e)
+            null
+        }
         Log.i(TAG, "VDX Accessibility Service connected — accessibility service active")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        // STABILITY LAW (2026-10-18): a crash inside event handling kills the whole
+        // app the moment the enable switch flips (the reported "2nd accessibility
+        // crash"). An accessibility event is INPUT, not a guarantee — one bad or
+        // hostile event (Samsung One UI quirk, dead node, cross-app edge case)
+        // must never take the process down. Every branch below is guarded; a
+        // failed event is logged and dropped, never fatal.
+        try {
+            val eventType = event.eventType
 
-        val eventType = event.eventType
-
-        // Feed content-change events to the extractor so the cache stays fresh.
-        screenExtractor?.onContentChanged(event)
-
-        // Detect text-field focus — report to bubble service
-        if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
-            eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
-        ) {
-            val src = event.source ?: return
-            if (isEditableNode(src)) {
-                focusedTextField = src
-                Log.d(TAG, "Editable text field focused: ${nodeText(src)}")
-                // Notify the bubble service if it's running
-                BubbleForegroundService.onTextFieldFocused()
-            } else if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
-                // Focus moved to a non-editable element — clear the reference
-                focusedTextField = null
+            // Feed content-change events to the extractor so the cache stays fresh.
+            try {
+                screenExtractor?.onContentChanged(event)
+            } catch (e: Exception) {
+                Log.w(TAG, "extractor rejected event type=$eventType", e)
             }
-        }
 
-        // Screen-reader band (level 9-10): on window change, announce the new
-        // foreground app + screen title. The bubble service checks the dial level
-        // itself and only speaks when it is >= 9.
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString() ?: ""
-            val title = event.text
-                ?.mapNotNull { it?.toString() }
-                ?.firstOrNull { it.isNotBlank() }
-                ?: event.contentDescription?.toString()
-                ?: ""
-            if (pkg.isNotBlank() || title.isNotBlank()) {
-                BubbleForegroundService.onForegroundWindowChanged(pkg, title)
+            // Detect text-field focus — report to bubble service
+            if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
+                eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+            ) {
+                val src: android.view.accessibility.AccessibilityNodeInfo? = try {
+                    event.source
+                } catch (e: Exception) {
+                    null // node can be stale/dead on some OEM builds
+                }
+                if (src == null) return
+                if (isEditableNode(src)) {
+                    focusedTextField = src
+                    Log.d(TAG, "Editable text field focused: ${nodeText(src)}")
+                    // Notify the bubble service if it's running
+                    try {
+                        BubbleForegroundService.onTextFieldFocused()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "bubble notify failed", e)
+                    }
+                } else if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
+                    // Focus moved to a non-editable element — clear the reference
+                    focusedTextField = null
+                }
             }
+
+            // Screen-reader band (level 9-10): on window change, announce the new
+            // foreground app + screen title. The bubble service checks the dial level
+            // itself and only speaks when it is >= 9.
+            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                val pkg = event.packageName?.toString() ?: ""
+                val title = event.text
+                    ?.mapNotNull { it?.toString() }
+                    ?.firstOrNull { it.isNotBlank() }
+                    ?: event.contentDescription?.toString()
+                    ?: ""
+                if (pkg.isNotBlank() || title.isNotBlank()) {
+                    try {
+                        BubbleForegroundService.onForegroundWindowChanged(pkg, title)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "bubble window-change notify failed", e)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Never let one event take the process down.
+            Log.w(TAG, "event handler dropped event type=${event.eventType}", e)
         }
     }
 
