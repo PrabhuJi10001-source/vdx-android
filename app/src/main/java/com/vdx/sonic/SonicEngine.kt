@@ -61,8 +61,6 @@ class SonicEngine(
     /** Per-service-instance session binding for confirmation tokens. */
     private val sessionId: String = java.util.UUID.randomUUID().toString()
 
-    /** Pending DRAFT_NOTE proposal awaiting the user's spoken "yes". */
-    private var pendingProposal: MemoryToActionPipeline.Proposal? = null
 
     private var tts: TextToSpeech? = null
     private var currentJob: Job? = null
@@ -499,12 +497,14 @@ class SonicEngine(
      * Shared by all entry points so the screen/accessibility is never required.
      */
     private suspend fun routeDraftNote(intent: SonicIntent) {
+        // NO-DRAFT LAW (v0.1.9, maker-ordered: "I don't want to use any draft"):
+        // the propose → pending → confirm dance is REMOVED. One question, direct
+        // save on yes. Nothing sits in a draft state anywhere.
         val proposal = memoryToAction.propose(
             transcript = intent.rawText,
             sessionId = sessionId,
             userId = "user"
         )
-        pendingProposal = proposal
         onStateChange?.invoke(BubbleState.CLARIFICATION_REQUIRED)
         onClarification?.invoke(
             ClarificationRequest(
@@ -667,41 +667,44 @@ class SonicEngine(
 
     fun handleClarificationResponse(request: ClarificationRequest, response: String) {
         val base = request.context ?: return
-        Log.d(TAG, "handleClarificationResponse: pendingProposal=${pendingProposal != null}, baseType=${base.type}, response=\"$response\"")
+        Log.d(TAG, "handleClarificationResponse: baseType=${base.type}, response=\"$response\"")
 
-        // DRAFT_NOTE confirmation: the pending proposal is the source of truth.
-        // On "yes", mint the token (live path) and execute through the slice.
-        val pending = pendingProposal
-        if (pending != null && base.type == IntentType.DRAFT_NOTE) {
+        // DRAFT_NOTE confirmation: NO-DRAFT LAW — one question, direct save.
+        // The whole branch runs on a coroutine because propose() is async.
+        if (base.type == IntentType.DRAFT_NOTE) {
             val lower = response.lowercase().trim()
-            if (lower.startsWith("yes") || lower.startsWith("y")) {
-                pendingProposal = null
-                val token = memoryToAction.confirmProposal(pending)
-                scope.launch {
-                    val result = memoryToAction.execute(pending, token)
-                    onStateChange?.invoke(
-                        when (result) {
-                            is MemoryToActionPipeline.SliceResult.Saved -> BubbleState.DONE
-                            else -> BubbleState.ERROR
-                        }
-                    )
-                    onResult?.invoke(
-                        when (result) {
-                            is MemoryToActionPipeline.SliceResult.Saved ->
-                                ExecutionResult.Success("Draft saved: ${result.body.take(40)}", 1)
-                            is MemoryToActionPipeline.SliceResult.Rejected ->
-                                ExecutionResult.Failed(result.reason, recoverable = false)
-                            is MemoryToActionPipeline.SliceResult.Cancelled ->
-                                ExecutionResult.Cancelled(result.reason)
-                            is MemoryToActionPipeline.SliceResult.Failed ->
-                                ExecutionResult.Failed(result.reason, recoverable = false)
-                        }
-                    )
+            scope.launch {
+                if (!lower.startsWith("yes") && !lower.startsWith("y")) {
+                    onStateChange?.invoke(BubbleState.DONE)
+                    onResult?.invoke(ExecutionResult.Cancelled(PromptTemplate.render(PromptTemplate.NOTE_CANCELLED)))
+                    return@launch
                 }
-            } else {
-                pendingProposal = null
-                onStateChange?.invoke(BubbleState.DONE)
-                onResult?.invoke(ExecutionResult.Cancelled(PromptTemplate.render(PromptTemplate.NOTE_CANCELLED)))
+                // proposal rebuilt FROM THE REQUEST ITSELF (never stored as a draft)
+                val pending = memoryToAction.propose(
+                    transcript = base.rawText,
+                    sessionId = sessionId,
+                    userId = "user"
+                )
+                val token = memoryToAction.confirmProposal(pending)
+                val result = memoryToAction.execute(pending, token)
+                onStateChange?.invoke(
+                    when (result) {
+                        is MemoryToActionPipeline.SliceResult.Saved -> BubbleState.DONE
+                        else -> BubbleState.ERROR
+                    }
+                )
+                onResult?.invoke(
+                    when (result) {
+                        is MemoryToActionPipeline.SliceResult.Saved ->
+                            ExecutionResult.Success("Saved: ${result.body.take(40)}", 1)
+                        is MemoryToActionPipeline.SliceResult.Rejected ->
+                            ExecutionResult.Failed(result.reason, recoverable = false)
+                        is MemoryToActionPipeline.SliceResult.Cancelled ->
+                            ExecutionResult.Cancelled(result.reason)
+                        is MemoryToActionPipeline.SliceResult.Failed ->
+                            ExecutionResult.Failed(result.reason, recoverable = false)
+                    }
+                )
             }
             return
         }
