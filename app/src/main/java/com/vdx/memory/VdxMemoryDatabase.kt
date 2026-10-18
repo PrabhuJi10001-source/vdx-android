@@ -90,7 +90,41 @@ abstract class VdxMemoryDatabase : RoomDatabase() {
 
         fun getInstance(context: Context): VdxMemoryDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
+                INSTANCE ?: buildAndOpen(context).also { INSTANCE = it }
+            }
+        }
+
+        /**
+         * MEMORY CRASH GUARD (v0.1.1-stable, 2026-10-18):
+         * The DB is fail-closed on purpose — a missing migration throws instead of
+         * wiping user memory. But a device that first installed an OLDER alpha
+         * (schema v1/v2) has NO migration path, so plain Room would throw on open
+         * on EVERY launch — an app that cannot even start because of memory.
+         * This guard forces the open under a watch: if the stored schema is too
+         * old to migrate, the existing file is ARCHIVED (never deleted — the
+         * preserved as vdx_memory.db.<ts>.archive for
+         * manual recovery) and a fresh v5 DB is built. One bad device cannot
+         * keep the app from booting.
+         */
+        private fun buildAndOpen(context: Context): VdxMemoryDatabase {
+            val appCtx = context.applicationContext
+            val first = buildDatabase(appCtx)
+            return try {
+                first.openHelper.writableDatabase // force open + migration check NOW
+                first
+            } catch (e: Exception) {
+                android.util.Log.e("VdxMemory", "memory DB unopenable (old schema) — archiving and rebuilding", e)
+                // Archive, don't destroy: unmovable file is tolerated (continue with same name anyway)
+                val archiveStamp = System.currentTimeMillis()
+                for (suffix in listOf("", "-wal", "-shm")) {
+                    val f = appCtx.getDatabasePath(DB_NAME + suffix)
+                    try {
+                        if (f.exists()) f.renameTo(appCtx.getDatabasePath("$DB_NAME.$archiveStamp.archive$suffix"))
+                    } catch (_: Exception) { /* keep going: worst case rebuild in place */ }
+                }
+                val fresh = buildDatabase(appCtx)
+                fresh.openHelper.writableDatabase
+                fresh
             }
         }
 
