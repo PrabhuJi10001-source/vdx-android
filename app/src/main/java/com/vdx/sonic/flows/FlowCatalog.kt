@@ -417,6 +417,14 @@ object FlowCatalog {
                     ActionPrimitive.WaitForUserConfirmation("Book Uber to $dest?"),
                     "Confirm book"
                 )
+                // v0.1.7: the FINAL BOOKING CLICK — after the user's yes, the app
+                // actually taps the first ride card in the fare list (money law:
+                // card tap happens ONLY behind the confirmation gate above).
+                steps += ActionStep(
+                    next(),
+                    ActionPrimitive.ClickFirstRideCard,
+                    "Tap the first ride card to book"
+                )
             }
         }
         return steps

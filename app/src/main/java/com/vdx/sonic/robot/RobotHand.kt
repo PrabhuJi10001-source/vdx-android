@@ -300,6 +300,39 @@ class RobotHand(
                 else ExecutionResult.Success("Element appeared: ${node.text ?: node.contentDescription ?: node.ref}", 1)
             }
 
+            is ActionPrimitive.ClickFirstRideCard -> {
+                // v0.1.7: the money-step only exists behind a WaitForUserConfirmation
+                // (the plan builder guarantees this ordering). Scan the fare list:
+                // the first CLICKABLE element in the lower 60% of the screen whose
+                // text/content label shows a fare (₹ / $ / digits), then gesture-tap
+                // or click it.
+                if (a11y == null) {
+                    ExecutionResult.Unverified("Book Uber", "accessibility not bound — tap the ride card manually", step.id)
+                } else {
+                    val screen = harness.readScreen(a11y)
+                    val h = context.resources.displayMetrics.heightPixels
+                    val card = screen.elements.firstOrNull { el ->
+                        el.isClickable == true &&
+                        (el.bounds?.centerY ?: 0) > h * 0.4 &&
+                        listOf(el.text, el.contentDescription).any { t ->
+                            t != null && Regex("""[₹$]\s?\d|\d+\.\d{2}.""").containsMatchIn(t)
+                        }
+                    }
+                    if (card == null) ExecutionResult.Failed(
+                        "No priced ride card found on screen", step.id, recoverable = true)
+                    else {
+                        val a11yNode = findAccessibilityNode(a11y, card)
+                        if (a11yNode == null) ExecutionResult.Failed(
+                            "Ride card not found in tree", step.id, recoverable = true)
+                        else {
+                            val ok = clickNode(a11yNode, a11y)
+                            if (ok) ExecutionResult.Success("Ride card tapped — booking in progress", 1)
+                            else ExecutionResult.Failed("Could not tap the ride card", step.id, recoverable = true)
+                        }
+                    }
+                }
+            }
+
             is ActionPrimitive.FocusNode -> {
                 val screen = harness.readScreen(a11y)
                 val node = findNode(screen, action.selector)

@@ -57,7 +57,7 @@ class Planner(private val context: Context? = null) {
         }
         // Call release is Play-clean: native DIAL, never a11y knowledge steps.
         if (intent.type == IntentType.CALL) {
-            return FlowCatalog.plan(intent)
+            return planCallFlow(intent)
         }
         // Try the knowledge base first — if we have navigation steps for this
         // app+action, use them to build the plan.
@@ -217,6 +217,81 @@ class Planner(private val context: Context? = null) {
             "gmail", "email" -> "com.google.android.gm"
             "messages", "sms" -> "com.google.android.apps.messaging"
             else -> name
+        }
+    }
+
+    /**
+     * CALL FLOW v0.1.7 — the maker's exact ladder, real end-to-end:
+     *   1. resolve the number in the PHONE'S OWN contacts (system language/data);
+     *   2. open the dialer screen preloaded with that number;
+     *   3. ask "call <name> at <number>? is this the person?" — the spoken
+     *      confirmation the maker demanded;
+     *   4. on YES → place the CALL itself (ACTION_CALL; CALL_PHONE was granted at
+     *      install). No permission → honest ACTION_DIAL fallback (tap call).
+     * The app previously only SPOKE the action; the chain from confirm to dial
+     * was never wired. Nothing here is new code without a human gate.
+     */
+    private fun planCallFlow(intent: SonicIntent): ExecutionPlan {
+        val contact = intent.entities["contact"]
+            ?: intent.entities["number"].orEmpty()
+        val res = context?.let { ContactResolver.resolve(it, contact) }.orEmpty()
+        var idx = 0
+        fun n() = "s${idx++}"
+        return when {
+            // CASE 0: nothing found — open the dialer and hand the search to the person
+            res.isEmpty() -> {
+                ExecutionPlan(
+                    intent = intent,
+                    steps = listOf(
+                        ActionStep(n(), ActionPrimitive.SystemAction(
+                            "dial", mapOf("number" to contact)),
+                            "Open the dialer"),
+                        ActionStep(n(), ActionPrimitive.AskUser(
+                            "I couldn't find \"$contact\" in contacts. The dialer is open — search the name there, or say the number."),
+                            "Ask for the number")
+                    )
+                )
+            }
+            // CASE 2 covers multiple numbers (one matches handled above it)
+            res.size == 1 -> {
+                val number = res[0].number.filter { it.isDigit() || it == '+' }
+                ExecutionPlan(
+                    intent = intent,
+                    steps = listOf(
+                        ActionStep(n(), ActionPrimitive.SystemAction(
+                            "confirm_call", mapOf("contact" to contact, "number" to number)),
+                            "Ask: call $contact at ${res[0].number}?"),
+                        ActionStep(n(), ActionPrimitive.WaitForUserConfirmation(
+                            "Call $contact at ${res[0].number}? Is this the right person? Say yes to call, or say who you meant."),
+                            "Confirm person + call"),
+                        ActionStep(n(), ActionPrimitive.SystemAction(
+                            "call_direct", mapOf("number" to number, "contact" to contact)),
+                            "Place the call")
+                    )
+                )
+            }
+            // CASE 2: several numbers — name them all, call after explicit choice
+            else -> {
+                val list = res.joinToString("; ") { "${it.label} ${it.number}" }
+                val first = res.firstOrNull()
+                val firstNum = first?.number?.filter { it.isDigit() || it == '+' } ?: ""
+                ExecutionPlan(
+                    intent = intent,
+                    steps = listOf(
+                        ActionStep(n(), ActionPrimitive.SystemAction(
+                            "confirm_call", mapOf(
+                                "contact" to contact,
+                                "numbers" to list.take(5))),
+                            "Read found numbers for $contact"),
+                        ActionStep(n(), ActionPrimitive.WaitForUserConfirmation(
+                            "Found for $contact: $list. Is the first (${first?.number}) the person? Say yes to call it, or say which one."),
+                            "Confirm which number"),
+                        ActionStep(n(), ActionPrimitive.SystemAction(
+                            "call_direct", mapOf("number" to firstNum, "contact" to contact)),
+                            "Place the call")
+                    )
+                )
+            }
         }
     }
 }

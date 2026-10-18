@@ -509,6 +509,26 @@ class MainActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         val rowPad = (14 * density).toInt()
 
+        // SAMSUNG status line (the maker's phone: Galaxy AI languages)
+        val onDevice = try {
+            if (android.os.Build.VERSION.SDK_INT >= 31)
+                android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+            else false
+        } catch (_: Exception) { false }
+        val samsung = TextView(this).apply {
+            textSize = 11f
+            setPadding(rowPad, 0, rowPad, (6 * density).toInt())
+            text = if (onDevice)
+                "Samsung on-device voice engine: AVAILABLE — any language you installed under Settings → Galaxy AI works in this app offline, free."
+            else
+                "Samsung on-device voice engine: not detected on this device — use the pack below."
+            setTextColor(0xFF444444.toInt())
+        }
+        root.addView(samsung, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = (8 * density).toInt()
+        })
+
         for (pack in com.vdx.sonic.voice.ModelStoreManager.PACKS) {
             val installed = com.vdx.sonic.voice.ModelStoreManager.isInstalled(this, pack)
             val selected = com.vdx.sonic.voice.ModelStoreManager.selectedPackId(this) == pack.id

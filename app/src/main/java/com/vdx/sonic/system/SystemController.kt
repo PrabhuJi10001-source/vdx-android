@@ -48,6 +48,19 @@ class SystemController(private val context: Context) {
                 "ringer_normal" -> setRinger(AudioManager.RINGER_MODE_NORMAL)
                 "screenshot" -> openSettings(Settings.ACTION_SETTINGS, "Use power+volume for screenshot, or system screenshot gesture")
                 "dial" -> dial(params["number"] ?: params["contact"] ?: "")
+                // v0.1.7 CALL CHAIN: confirmation prompt + the actual call.
+                // confirm_call SPEAKS the resolved number so the person hears what
+                // will be called before saying yes; call_direct places the call
+                // (CALL_PHONE granted at install) with an honest ACTION_DIAL
+                // fallback if the permission was not granted.
+                "confirm_call" -> {
+                    val contact = params["contact"] ?: ""
+                    val number = params["number"] ?: ""
+                    val numbers = params["numbers"] ?: ""
+                    if (numbers.isNotBlank()) "For $contact, found: $numbers"
+                    else "Ready to call $contact at $number"
+                }
+                "call_direct" -> directCall(params["number"] ?: "", params["contact"] ?: "")
                 "sms_compose" -> smsCompose(params["number"] ?: "", params["message"] ?: "")
                 "email_compose" -> emailCompose(params["contact"] ?: "", params["message"] ?: "", params["subject"] ?: "")
                 "web_search" -> webSearch(params["query"] ?: "")
@@ -136,6 +149,34 @@ class SystemController(private val context: Context) {
             AudioManager.RINGER_MODE_SILENT -> "Silent mode on"
             AudioManager.RINGER_MODE_VIBRATE -> "Vibrate mode on"
             else -> "Ringer normal"
+        }
+    }
+
+    /**
+     * directCall — the ACTUAL call step (v0.1.7). Runs AFTER the user said yes to
+     * the "Call X at <number>? is this the person?" gate. ACTION_CALL places the
+     * call with no second tap; when the permission is missing it degrades to
+     * ACTION_DIAL (number preloaded) and says so — never a silent nothing.
+     */
+    private fun directCall(number: String, contact: String): String {
+        if (number.isBlank()) {
+            // nothing resolvable — open the dialer and let the user search
+            val intent = Intent(Intent.ACTION_DIAL).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            return "No number found for $contact — dialer is open, search the name on screen"
+        }
+        val uri = Uri.parse("tel:${number.filter { it.isDigit() || it == '+' }}")
+        return try {
+            val intent = Intent(Intent.ACTION_CALL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            "Calling $contact ($number)"
+        } catch (e: SecurityException) {
+            val intent = Intent(Intent.ACTION_DIAL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            "Call permission not granted — dialer is open with $number, tap the call button"
+        } catch (e: Exception) {
+            Log.e(TAG, "directCall failed", e)
+            "Could not place the call: ${e.message}"
         }
     }
 

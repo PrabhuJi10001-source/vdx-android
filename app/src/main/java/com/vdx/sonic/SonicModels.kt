@@ -220,6 +220,13 @@ sealed class ActionPrimitive {
     data class FailWithReason(val reason: String) : ActionPrimitive()
     /** Direct Android system / intent actions (V1 system parity). */
     data class SystemAction(val name: String, val params: Map<String, String> = emptyMap()) : ActionPrimitive()
+    /**
+     * v0.1.7 UBuber booking close-out: click the FIRST ride card in the fare
+     * list (bottom area of the Uber screen). Money law: only ever emitted from
+     * a plan whose previous step is WaitForUserConfirmation — the human said
+     * yes before this card is ever tapped.
+     */
+    object ClickFirstRideCard : ActionPrimitive()
 }
 
 data class NodeSelector(

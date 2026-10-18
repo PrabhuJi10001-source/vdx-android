@@ -907,7 +907,23 @@ class BubbleForegroundService : Service() {
         Log.d(TAG, "startVoiceCapture: using Android SpeechRecognizer")
 
         if (speechRecognizer == null) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            // SAMSUNG'S DOWNLOADED LANGUAGES, THE OFFICIAL WAY (v0.1.5, maker ask):
+            // On Samsung/One-UI devices the OFFLINE recognition engine (the same
+            // one Galaxy AI languages power — Bixby/Live-transcribe/Recorder) is
+            // exposed through Android's PUBLIC on-device recognition API. When the
+            // user has installed a language pack via Settings → Galaxy AI, this
+            // recognizer transcribes that language OFFLINE and FREE — no new
+            // download from us, Samsung's own model serves OUR app. Standard
+            // cloud-backed recognizer remains the fallback on other devices.
+            speechRecognizer = if (
+                Build.VERSION.SDK_INT >= 31 &&
+                android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+            ) {
+                Log.i(TAG, "startVoiceCapture: using the ON-DEVICE recognizer (Samsung's downloaded languages serve VDX)")
+                android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(this)
+            }
         }
         val recognizer = speechRecognizer ?: run {
             Log.e(TAG, "startVoiceCapture: SpeechRecognizer not available")

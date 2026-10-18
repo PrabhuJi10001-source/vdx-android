@@ -11,8 +11,8 @@ android {
         applicationId = "com.vdx.alpha"
         minSdk = 28
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.5-langs"
+        versionCode = 8
+        versionName = "0.1.7-call"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
