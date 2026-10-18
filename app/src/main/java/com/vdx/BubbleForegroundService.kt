@@ -971,13 +971,13 @@ class BubbleForegroundService : Service() {
                     if (!transcript.isNullOrBlank()) {
                         currentState = BubbleState.THINKING
                         // Dictation mode: if an editable text field currently has
-                        // input focus, the transcript is dictation — insert it into
-                        // that field directly (non-focusable overlay + ACTION_SET_TEXT
-                        // + clipboard-paste fallback) instead of running it through
-                        // the command pipeline. This is the soniqo/speech-android
-                        // pattern: the bubble never steals focus, so the target field
-                        // keeps it and the text lands reliably.
-                        if (com.vdx.VdxAccessibilityService.instance?.findFocusedTextField() != null) {
+                        // input focus, the transcript MAY be dictation. DEFAULT is
+                        // dictation only when it isn't a COMMAND (the maker bug: a
+                        // full "WhatsApp Cody …" command got pasted into whatever
+                        // was focused instead of running the pipeline).
+                        // FINAL LAW (2026-10-18): commands beat dictation.
+                        if (com.vdx.VdxAccessibilityService.instance?.findFocusedTextField() != null &&
+                            !com.vdx.sonic.voice.CmdPriorityClassifier.isCommand(transcript!!)) {
                             val ok = dictationInserter.insert(transcript)
                             if (ok) {
                                 currentState = BubbleState.DONE

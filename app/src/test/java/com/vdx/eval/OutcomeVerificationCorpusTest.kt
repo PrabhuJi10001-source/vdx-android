@@ -87,15 +87,21 @@ class OutcomeVerificationCorpusTest {
         val steps = whatsappPlan("send").steps
         steps.forEach { step ->
             when (val a = step.action) {
-                is ActionPrimitive.ClickNode -> assertNotNull(
-                    "click selector anchored: ${step.description}", a.selector.resourceId)
-                is ActionPrimitive.SetText -> assertNotNull(
-                    "set-text selector anchored: ${step.description}", a.selector.resourceId)
+                is ActionPrimitive.ClickNode -> assertTrue(
+                    "click selector anchored (id OR contentDescription OR hint OR text): ${step.description}",
+                    a.selector.resourceId != null || a.selector.contentDescription != null ||
+                        a.selector.hint != null || a.selector.text != null)
+                is ActionPrimitive.SetText -> assertTrue(
+                    "set-text selector anchored (id OR hint): ${step.description}",
+                    a.selector.resourceId != null || a.selector.hint != null)
                 else -> {}
             }
         }
+        // v0.1.2 SEND LADDER: anchored by content-description (any WhatsApp build:
+        // send / send_fab) and clickable — the hard-coded com.whatsapp:id/send id
+        // did not exist on Samsung/One-UI WhatsApp builds and the send never fired.
         val sendIdx = steps.indexOfFirst {
-            (it.action as? ActionPrimitive.ClickNode)?.selector?.resourceId == "com.whatsapp:id/send"
+            (it.action as? ActionPrimitive.ClickNode)?.selector?.contentDescription?.equals("send", ignoreCase = true) == true
         }
         assertTrue("send click exists", sendIdx > 0)
         val before = steps[sendIdx - 1].action
@@ -119,16 +125,20 @@ class OutcomeVerificationCorpusTest {
     @Test
     fun P5_sendFlow_shape_typeConfirmClick() {
         val steps = whatsappPlan("send").steps
-        val tail = steps.takeLast(3).map { it.action::class.simpleName }
+        // v0.1.2 SEND LADDER: wait-for-node now sits between SetText and the
+        // consent gate (so the send button is verified present BEFORE asking).
+        val tail = steps.takeLast(4).map { it.action::class.simpleName }
         assertEquals(
-            "send flow must end Type->Confirm->Click",
-            listOf("SetText", "WaitForUserConfirmation", "ClickNode"),
+            "send flow must end Type->WaitNode->Confirm->Click",
+            listOf("SetText", "WaitForNode", "WaitForUserConfirmation", "ClickNode"),
             tail
         )
-        val set = steps[steps.size - 3].action as ActionPrimitive.SetText
-        assertEquals("com.whatsapp:id/entry", set.selector.resourceId)
+        val set = steps[steps.size - 4].action as ActionPrimitive.SetText
+        // anchored by hint (message entry) — reserved IDs vary across WhatsApp builds
+        assertTrue("message field anchored by hint", set.selector.hint?.equals("message", ignoreCase = true) == true)
         val click = steps.last().action as ActionPrimitive.ClickNode
-        assertEquals("com.whatsapp:id/send", click.selector.resourceId)
+        assertTrue("send anchor = contentDescription 'send'",
+            click.selector.contentDescription?.equals("send", ignoreCase = true) == true)
     }
 
     /** P1b — the open flow (no message) still ends in a readable, honest state. */

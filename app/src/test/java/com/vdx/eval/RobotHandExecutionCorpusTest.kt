@@ -220,7 +220,10 @@ class RobotHandExecutionCorpusTest {
 
     @Test
     fun C10_flowCatalog_whatsappPlan_selectorsAllAnchored() {
-        // Every FlowCatalog WhatsApp selector must carry a resourceId anchor (D1 law enforced on the flows themselves).
+        // v0.1.2 ANCHOR LAW: every click/set-text selector must be ANCHORED —
+        // by resourceId OR hint OR text OR contentDescription. The strict
+        // resourceId-only law broke on Samsung/One-UI WhatsApp builds where the
+        // send button has no stable id, so the anchor is now "any identifier".
         val intent = com.vdx.sonic.SonicIntent(
             mode = com.vdx.sonic.IntentMode.COMMAND,
             type = com.vdx.sonic.IntentType.WHATSAPP,
@@ -235,11 +238,14 @@ class RobotHandExecutionCorpusTest {
         assertTrue("plan must have selector steps", relevant.isNotEmpty())
         val anchored = relevant.filter {
             when (val a = it.action) {
-                is com.vdx.sonic.ActionPrimitive.ClickNode -> a.selector.resourceId != null
-                is com.vdx.sonic.ActionPrimitive.SetText -> a.selector.resourceId != null
+                is com.vdx.sonic.ActionPrimitive.ClickNode ->
+                    a.selector.resourceId != null || a.selector.contentDescription != null ||
+                        a.selector.hint != null || a.selector.text != null
+                is com.vdx.sonic.ActionPrimitive.SetText ->
+                    a.selector.resourceId != null || a.selector.hint != null
                 else -> false
             }
         }
-        assertEquals("every click/set-text selector in the WhatsApp flow must carry a resourceId anchor", relevant.size, anchored.size)
+        assertEquals("every click/set-text selector in the WhatsApp flow must carry an anchor (id/hint/text/contentDescription)", relevant.size, anchored.size)
     }
 }

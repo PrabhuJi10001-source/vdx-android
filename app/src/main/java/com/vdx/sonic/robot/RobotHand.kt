@@ -614,7 +614,22 @@ class RobotHand(
         if (!node.isEditable) return false
         val args = android.os.Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val setOk = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (setOk) return true
+        // CLIPBOARD-PASTE FALLBACK (2026-10-18): several fields (esp. WhatsApp's
+        // Samsung entry) reject ACTION_SET_TEXT. Same pattern as DictationInserter:
+        // focus → paste from clipboard → clear. Never leave the text behind.
+        return try {
+            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as? android.content.ClipboardManager ?: return false
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("vdx_send", text))
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val ok = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("", ""))
+            ok
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun clickNode(node: AccessibilityNodeInfo, a11y: AccessibilityService?): Boolean {

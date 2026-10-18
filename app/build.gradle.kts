@@ -11,8 +11,8 @@ android {
         applicationId = "com.vdx.alpha"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1-stable"
+        versionCode = 3
+        versionName = "0.1.2-send"
 
         // Export Room schemas so MigrationTestHelper can validate migration paths
         // (instrumented device tests) against versioned schema JSON. This is a

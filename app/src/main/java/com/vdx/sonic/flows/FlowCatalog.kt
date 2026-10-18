@@ -231,8 +231,13 @@ object FlowCatalog {
                 if (message.isNotBlank()) {
                     steps += ActionStep(
                         next(),
-                        ActionPrimitive.SetText(NodeSelector(resourceId = "com.whatsapp:id/entry", hint = "Message", isEditable = true), message),
+                        ActionPrimitive.SetText(NodeSelector(hint = "message", isEditable = true), message),
                         "Type message"
+                    )
+                    steps += ActionStep(
+                        next(),
+                        ActionPrimitive.WaitForNode(NodeSelector(contentDescription = "send", isClickable = true), 3000),
+                        "Wait send button"
                     )
                     steps += ActionStep(
                         next(),
@@ -242,7 +247,7 @@ object FlowCatalog {
                     steps += ActionStep(
                         next(),
                         ActionPrimitive.ClickNode(
-                            NodeSelector(resourceId = "com.whatsapp:id/send", contentDescription = "Send", isClickable = true)
+                            NodeSelector(contentDescription = "send", isClickable = true)
                         ),
                         "Send"
                     )
@@ -256,18 +261,18 @@ object FlowCatalog {
     private fun searchAndOpenChat(next: () -> String, contact: String): List<ActionStep> = listOf(
         ActionStep(
             next(),
-            ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/menuitem_search", contentDescription = "Search", isClickable = true)),
+            ActionPrimitive.ClickNode(NodeSelector(hint = "search", isEditable = true)),
             "Open search"
         ),
         ActionStep(
             next(),
-            ActionPrimitive.SetText(NodeSelector(resourceId = "com.whatsapp:id/search_src_text", hint = "Search", isEditable = true), contact),
+            ActionPrimitive.SetText(NodeSelector(hint = "search", isEditable = true), contact),
             "Search $contact"
         ),
         ActionStep(next(), ActionPrimitive.WaitForPackage("com.whatsapp", 2500), "Wait results"),
         ActionStep(
             next(),
-            ActionPrimitive.ClickNode(NodeSelector(resourceId = "com.whatsapp:id/conversation_row", text = contact, isClickable = true)),
+            ActionPrimitive.ClickNode(NodeSelector(text = contact, isClickable = true)),
             "Open chat"
         ),
         ActionStep(next(), ActionPrimitive.WaitForPackage("com.whatsapp", 2000), "Wait chat")
