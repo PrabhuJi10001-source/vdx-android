@@ -22,13 +22,18 @@ object CmdPriorityClassifier {
      *  prefix-anchored: a text field containing the word "whatsapp" anywhere is not
      *  enough to steal focus — the phrase must clearly command an action. */
     private val COMMAND_KEYWORDS = listOf(
-        "whatsapp", "call", "dial", "text to", "message to", "message:",
+        "whatsapp", "whats app", "call", "dial", "text to", "message to", "message:",
         "open ", "launch ", "go to", "google ", "youtube", "search ",
         "find my", "play ", "instagram", "gmail", "email ", "maps",
         "navigate ", "camera", "settings", "phone ", "sms", "send ",
         "draft note", "remind me", "set reminder", "take note",
         "read screen", "read my screen", "read notifications", "describe screen",
-        "go back", "go home", "scroll ", "tap ", "click "
+        "go back", "go home", "scroll ", "tap ", "click ",
+        // H inglish / spoken-Hindi verbs (transliterated, the maker's real speech)
+        "kholo", "khol do", "khol na", "kholna", "khol dena", "chalu karo",
+        "shuru karo", "on karo", "open karo", "bhejo", "bhej do", "likho",
+        "likh do", "bol do", "call karo", "call kijiye", "karna hai",
+        "btaiye", "dikhao", "batao", "kholiye", "bhejni", "bhejna"
     )
 
     /**

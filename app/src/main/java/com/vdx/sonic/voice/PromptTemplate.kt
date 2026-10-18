@@ -227,7 +227,7 @@ object PromptTemplate {
     fun sttLanguageTag(locale: String = activeLocale): String = when (locale) {
         LOCALE_HI -> "hi-IN"
         LOCALE_HINGLISH -> "en-IN"
-        else -> "en-US"
+        else -> "en-IN"
     }
 
     // ──────────────────────────────────────────────────────────────

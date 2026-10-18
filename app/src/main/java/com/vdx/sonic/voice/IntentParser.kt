@@ -110,6 +110,68 @@ class IntentParser {
             )
         }
 
+        // ── HINGLISH / SPOKEN-HINDI COMMANDS (2026-10-18) ────────────────
+        // THE MAKER ACTUALLY SPEAKS HINGLISH: "WhatsApp kholo", "YouTube khol do",
+        // "Papa ko call karo", "Simran ko message bhejo". The English-only grammar
+        // returned null on every one — the app took the voice command but never
+        // opened anything. These transliterated rules must run BEFORE the English
+        // call/whatsapp regexes (which would otherwise misread the phrase).
+        // Hinditran rule 1: "<app> kholo / khol do / khulwa do / chalu karo"
+        Regex(
+            """^(?:kya\s+)?(?:aap\s+)?(.+?)\s+(?:kholo|khol|khol\s?do|khol\s?dena|khol\s?na|kholna|khulw(?:a|ai)\s?do|chalu\s?karo|chalu\s?kijiye|open\s?karo|open\s?kro|start\s?karo|shuru\s?karo|on\s?karo)$"""
+        ).find(t)?.let { m ->
+            var app = m.groupValues[1].trim()
+            if (app.endsWith(" kholna hai") || app.endsWith(" kholna")) {
+                app = app.removeSuffix(" kholna hai").removeSuffix(" kholna").trim()
+            }
+            if (app.isNotBlank()) {
+                return SonicIntent(
+                    IntentMode.COMMAND, IntentType.APP_LAUNCH, rawText = text, confidence = HIGH,
+                    entities = mapOf("app" to app, "app_name" to app)
+                )
+            }
+        }
+        // Hinglish rule 2: leading verb — "kholo YouTube", "chalu karo gana"
+        Regex(
+            """^(?:kholo|khol|khol\s?do|khol\s?dena|chalu\s?karo|open\s?karo|start\s?karo|shuru\s?karo|launch\s?karo)\s+(.+)$"""
+        ).find(t)?.let { m ->
+            val app = m.groupValues[1].trim().removeSuffix(" hai")
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.APP_LAUNCH, rawText = text, confidence = HIGH,
+                entities = mapOf("app" to app, "app_name" to app)
+            )
+        }
+        // Hinglish rule 3: "<contact> ko call karo / kijiye / karna hai"
+        Regex(
+            """^(.+?)\s+(?:ko\s+)?(?:call|phone|ring|dial)\s+(?:karo|kro|kijiye|karna\s+hai|kar\s+dena)$"""
+        ).find(t)?.let { m ->
+            return SonicIntent(
+                IntentMode.COMMAND, IntentType.CALL, rawText = text, confidence = HIGH,
+                entities = mapOf("contact" to title(m.groupValues[1]), "action" to "call"),
+                requiresConfirmation = true
+            )
+        }
+        // Hinglish rule 4: "<contact> whatsapp kholo / karo" → open that chat
+        Regex(
+            """^(.+?)\s+(?:ko\s+)?whatsapp\s+(?:kholo|khol|khol\s?do|open\s?karo|kar\s?do)$"""
+        ).find(t)?.let { m ->
+            return wa(text, title(m.groupValues[1]), "", "open")
+        }
+        // Hinglish rule 5: "<contact> ko message/msg bhejo [text]" (WhatsApp by regional default)
+        Regex(
+            """^(.+?)\s+(?:ko\s+)?(?:message|msg)\s+(?:pe|par)?\s*(.+?)?\s*(?:bhej(?:o)?|bhej\s?do|likh(?:o)?|likh\s?do|bol\s?do)$/"""
+        ).find(t)?.let { m ->
+            val contact = m.groupValues[1].trim()
+            val body = m.groupValues.getOrNull(2)?.takeIf { it.isNotBlank() } ?: ""
+            return wa(text, title(contact), body, "send")
+        }
+        // Hinglish rule 6: "<contact> ko whatsapp pe <text> bhejo" (message first, contact second)
+        Regex(
+            """^(.+?)\s+ko\s+whatsapp\s+(?:pe|par|me)\s+(.+?)\s+(?:bhej(?:o)?|bhej\s?do|likh(?:o)?)$"""
+        ).find(t)?.let { m ->
+            return wa(text, title(m.groupValues[1]), m.groupValues[2].trim(), "send")
+        }
+
         // CALL — but "call X on WhatsApp" is a WhatsApp VOICE call, not a phone
         // call to a contact named "Mom on WhatsApp". Must run BEFORE the generic
         // call regex, which would otherwise swallow the whole "mom on whatsapp"
@@ -452,6 +514,22 @@ class IntentParser {
                 entities = mapOf("body" to m.groupValues.getOrNull(1).orEmpty().trim()),
                 requiresConfirmation = true
             )
+        }
+
+        // LAST-RESORT SAFETY NET (2026-10-18): never ask a pointless clarification
+        // when the phrase clearly names an app + an obvious action keyword. This
+        // is the exact user complaint "app दूसरे ऐप्स नहीं खोल रहा": ANY variant
+        // form ("youtube opening karwa do" etc.) still resolves to open-the-app.
+        Regex(
+            """\b(whatsapp|youtube|instagram|camera|settings|setting|gallery|phone|dialer|messages|gmail|maps|chrome|photos|browser|calculator)\b"""
+        ).find(t)?.let { m ->
+            if (Regex("""(khol|chalu|open|launch|start|bhej|shuru)""").find(t) != null) {
+                val app = m.groupValues[1]
+                return SonicIntent(
+                    IntentMode.COMMAND, IntentType.APP_LAUNCH, rawText = text, confidence = MED,
+                    entities = mapOf("app" to app, "app_name" to app)
+                )
+            }
         }
 
         val words = t.split(Regex("""\s+"""))

@@ -251,7 +251,10 @@ class PromptTemplateTest {
 
     @Test
     fun locale_sttLanguageTagForEnglish() {
-        assertEquals("en-US", PromptTemplate.sttLanguageTag("en"))
+        // v0.1.4-VOICE: default STT is now en-IN (Indian English) — the maker
+        // speaks Hinglish ("WhatsApp kholo", "message bhejo"); en-IN transcribes
+        // those words reliably. hi-IN / hinglish remain mapped as before.
+        assertEquals("en-IN", PromptTemplate.sttLanguageTag("en"))
     }
 
     @Test
