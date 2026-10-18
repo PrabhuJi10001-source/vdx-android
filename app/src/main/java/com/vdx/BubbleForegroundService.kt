@@ -1063,7 +1063,43 @@ class BubbleForegroundService : Service() {
             handler.postDelayed({ currentState = BubbleState.IDLE }, 1000)
             return
         }
-        sonicEngine.process(
+                // ON-DEVICE LANGUAGE ENGINE (v0.1.5): if the user installed + activated the
+        // Handy whisper pack, transcription happens HERE, fully offline - Hindi,
+        // Hinglish and English with automatic language detection. Missing engine or
+        // model falls back to the cloud-ASR path for this utterance (honest).
+        val pack = com.vdx.sonic.voice.ModelStoreManager.selectedPack(this)
+        val model = pack?.let { com.vdx.sonic.voice.ModelStoreManager.installedFile(this, it) }
+        if (pack != null && model != null && com.vdx.sonic.voice.WhisperAsrEngine.nativeAvailable()) {
+            currentState = BubbleState.THINKING
+            Thread {
+                val sampleRate = com.vdx.sonic.voice.PcmMicCapture.SAMPLE_RATE
+                val raw = com.vdx.sonic.voice.WhisperAsrEngine.transcribe(pcm, sampleRate, model.absolutePath)
+                handler.post {
+                    if (raw.isNullOrBlank()) {
+                        currentState = BubbleState.ERROR
+                        speak("The on-device engine could not transcribe. Using system voice for this line", Verbosity.MIN_ERROR)
+                        sonicEngine.process(
+                            CaptureSession(
+                                audioData = pcm,
+                                timestamp = System.currentTimeMillis(),
+                                foregroundPackage = null,
+                                focusedFieldState = null,
+                                uiSnapshot = null
+                            )
+                        )
+                    } else {
+                        currentState = BubbleState.THINKING
+                        showTopToast("$raw")
+                        val synthetic = com.vdx.sonic.AsrResult(
+                            text = raw, confidence = 0.9f, provider = "whisper-offline"
+                        )
+                        sonicEngine.processFromText(raw, synthetic)
+                    }
+                }
+            }.start()
+            return
+        }
+sonicEngine.process(
             CaptureSession(
                 audioData = pcm,
                 timestamp = System.currentTimeMillis(),

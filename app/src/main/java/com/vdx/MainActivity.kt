@@ -218,6 +218,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         buildAiKeysSection()
+        buildLanguagesSection()
         buildSpeechLevelSection()
         maybeShowTelemetryConsentDialog()
     }
@@ -498,6 +499,120 @@ class MainActivity : AppCompatActivity() {
     // One horizontal row of 11 tappable pips (0..10), current selection highlighted,
     // with a plain-language caption per band. Persists immediately on tap — no save
     // button. Also logs an essential `verbosity_changed` telemetry event.
+
+    // ════ LANGUAGES TAB (v0.1.5, user-ordered) ═══════════════════════════
+    // Voice language packs: pick a language → "Install this language?" dialog
+    // (size/scope shown, one-time download) → offline on-device voice engine
+    // (the Handy/whisper.cpp engine, MIT). Deleting removes the model file.
+    private fun buildLanguagesSection() {
+        val root = findViewById<LinearLayout>(R.id.languages_section) ?: return
+        val density = resources.displayMetrics.density
+        val rowPad = (14 * density).toInt()
+
+        for (pack in com.vdx.sonic.voice.ModelStoreManager.PACKS) {
+            val installed = com.vdx.sonic.voice.ModelStoreManager.isInstalled(this, pack)
+            val selected = com.vdx.sonic.voice.ModelStoreManager.selectedPackId(this) == pack.id
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(rowPad, rowPad, rowPad, (8 * density).toInt())
+                setBackgroundColor(0xFFFFFFFF.toInt())
+            }
+
+            val name = TextView(this).apply {
+                text = pack.displayName
+                textSize = 14f
+                setTextColor(0xFF1A1A2E.toInt())
+            }
+            val covers = TextView(this).apply {
+                text = pack.covers
+                textSize = 11f
+                setTextColor(0xFF777777.toInt())
+            }
+            val sizeMb = pack.sizeBytesEstimate / (1024 * 1024)
+            val status = TextView(this).apply {
+                textSize = 11f
+                text = when {
+                    selected -> "✅ ACTIVE — this app now listens in ${pack.displayName.split("(").first().trim()}"
+                    installed -> "✅ Installed — tap Activate to switch the voice engine"
+                    else -> "Not installed — one-time download of ≈${sizeMb} MB. Works offline after."
+                }
+                setPadding(0, (4 * density).toInt(), 0, 0)
+                setTextColor(0xFF555555.toInt())
+            }
+
+            val action = Button(this).apply {
+                isAllCaps = false
+                setTextColor(0xFF6C3AED.toInt())
+                background = null
+                text = when {
+                    selected -> "Deactivate (use system voice)"
+                    installed -> "Activate"
+                    else -> "Install $sizeMb MB"
+                }
+                setOnClickListener {
+                    if (installed) {
+                        // toggle selection
+                        val nowSelected = com.vdx.sonic.voice.ModelStoreManager.selectedPackId(this@MainActivity) == pack.id
+                        if (nowSelected) com.vdx.sonic.voice.ModelStoreManager.setSelected(this@MainActivity, "")
+                        else com.vdx.sonic.voice.ModelStoreManager.setSelected(this@MainActivity, pack.id)
+                        refreshLanguagesSection(root)
+                    } else {
+                        // THE QUESTION THE MAKER ORDERED: "Do you want to install this language?"
+                        androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Install this language?")
+                            .setMessage(pack.displayName + "\n\n≈" + sizeMb + " MB, ONE-TIME download.\nAfter install: works fully OFFLINE, and this pack understands Hindi, Hinglish and English together.\nAudio never leaves your phone.")
+                            .setPositiveButton("Yes, install") { _, _ ->
+                                status.text = "⬇ Downloading… (keep Wi-Fi on)"
+                                Thread {
+                                    val ok = com.vdx.sonic.voice.ModelStoreManager.download(
+                                        this@MainActivity, pack
+                                    ) { pct ->
+                                        runOnUiThread { status.text = "⬇ $pct%" }
+                                    }
+                                    runOnUiThread {
+                                        if (ok) {
+                                            com.vdx.sonic.voice.ModelStoreManager.setSelected(this@MainActivity, pack.id)
+                                            status.text = "✅ Installed + ACTIVE"
+                                            refreshLanguagesSection(root)
+                                        } else status.text = "❌ Download failed — tap Install to retry"
+                                    }
+                                }.start()
+                            }
+                            .setNegativeButton("Not now", null)
+                            .show()
+                    }
+                }
+            }
+            val remove = Button(this).apply {
+                isAllCaps = false
+                setTextColor(0xFFB91C1C.toInt())
+                background = null
+                text = if (installed) "Remove language" else ""
+                visibility = if (installed) View.VISIBLE else View.GONE
+                setOnClickListener {
+                    com.vdx.sonic.voice.ModelStoreManager.delete(this@MainActivity, pack)
+                    refreshLanguagesSection(root)
+                }
+            }
+
+            row.addView(name)
+            row.addView(covers)
+            row.addView(status)
+            row.addView(action)
+            row.addView(remove)
+            root.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = (8 * density).toInt()
+            })
+        }
+    }
+
+    private fun refreshLanguagesSection(root: LinearLayout) {
+        root.removeAllViews()
+        buildLanguagesSection()
+    }
+
     private fun buildSpeechLevelSection() {
         val root = findViewById<LinearLayout>(R.id.speech_level_section) ?: return
         root.removeAllViews()

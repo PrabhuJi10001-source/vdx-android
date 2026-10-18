@@ -11,18 +11,33 @@ android {
         applicationId = "com.vdx.alpha"
         minSdk = 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4-voice"
+        versionCode = 6
+        versionName = "0.1.5-langs"
 
-        // Export Room schemas so MigrationTestHelper can validate migration paths
-        // (instrumented device tests) against versioned schema JSON. This is a
-        // KSP project (not annotationProcessor), so the Room args go under ksp.
-        javaCompileOptions {
-            annotationProcessorOptions {
-                arguments += mapOf("room.schemaLocation" to "$projectDir/schemas")
-            }
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
+
+    // Handy-engine (whisper.cpp) native build — wired via CMakeLists in src/main/cpp
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // Export Room schemas so MigrationTestHelper can validate migration paths
+    // (instrumented device tests) against versioned schema JSON. This is a
+    // KSP project (not annotationProcessor), so the Room args go under ksp.
+    // NOTE: kept INSIDE defaultConfig (android.defaultConfig.javaCompileOptions —
+    // the API surface AGP 9 still resolves).
+    defaultConfig { javaCompileOptions {
+        annotationProcessorOptions {
+            arguments += mapOf("room.schemaLocation" to "$projectDir/schemas")
+        }
+    } }
+    // (closing brace of android block intentionally follows once below)
 
     // KSP passes Room args (Room 2.8 KSP; schema export for MigrationTestHelper).
     ksp {

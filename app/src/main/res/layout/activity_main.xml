@@ -279,6 +279,31 @@
 
         </LinearLayout>
 
+        <!-- LANGUAGES TAB (v0.1.5): voice language packs — Handy/whisper.cpp on-device engine -->
+        <TextView
+            android:id="@+id/languages_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🌐 Voice Languages"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A2E"
+            android:paddingStart="16dp" android:paddingEnd="16dp"
+            android:paddingTop="18dp" android:paddingBottom="6dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Install a language pack once — after that the voice engine runs fully offline on-device (Hindi + Hinglish + English)."
+            android:textSize="11sp"
+            android:textColor="#777777"
+            android:paddingStart="16dp" android:paddingEnd="16dp"
+            android:paddingBottom="8dp" />
+        <LinearLayout
+            android:id="@+id/languages_section"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
         <!-- OUTSIDE REQUEST PATH (demo driver) -->
         <TextView
             android:layout_width="match_parent"
