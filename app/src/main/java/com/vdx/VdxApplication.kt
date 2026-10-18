@@ -24,6 +24,10 @@ class VdxApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         installCrashCatcher()
+        // v0.1.8 SYSTEM-VOICE LAW (maker-ordered): the voice engine ALWAYS starts on
+        // the phone's own default system voice. Any installed language pack stays
+        // dormant unless the user deliberately re-activates it in the Languages tab.
+        com.vdx.sonic.voice.ModelStoreManager.setSelected(this, "")
         // Essential-events telemetry (opt-in, DPDP-clean). Initialises the event
         // queue, the pending batch file, and the upload worker. No network is
         // touched until the user opts in — consent is checked before any upload.

@@ -1056,12 +1056,16 @@ class BubbleForegroundService : Service() {
         recognizer.startListening(intent)
     }
 
-    /** Build the standard SpeechRecognizer intent (shared by first listen + wake-word re-arm). */
+    /** Build the standard SpeechRecognizer intent (shared by first listen + wake-word re-arm).
+     *  v0.1.8 SYSTEM-VOICE LAW (maker-ordered): NO language override of any kind.
+     *  The recognizer runs with the phone's OWN default language — whatever the
+     *  device is set to (English, Hindi, Korean, Japanese, anything). The Handy/
+     *  whisper pack stays installable in the Languages tab but is NOT active by
+     *  default and never switches the system voice off the phone's own. */
     private fun recognizerIntent(): Intent {
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            // Locale-aware STT: use the active PromptTemplate locale for speech recognition.
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, com.vdx.sonic.voice.PromptTemplate.sttLanguageTag())
+            // Deliberately NO EXTRA_LANGUAGE: the system default locale rules.
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
